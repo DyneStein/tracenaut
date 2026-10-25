@@ -1,0 +1,10 @@
+{
+  "name": "@tracenaut/instrument",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@babel/core": "7.29.7"
+  }
+}

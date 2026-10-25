@@ -1,0 +1,63 @@
+{
+  "repo": "https://github.com/hoangsonww/Claude-Code-Agent-Monitor@3cb22ae4a4e2ca31145351e1d73e05d0ff41f2dc",
+  "services": [
+    "web:browser:client",
+    "api:node:server"
+  ],
+  "timings": {
+    "routesMs": 1486,
+    "requestsMs": 2373,
+    "totalMs": 4332
+  },
+  "routes": {
+    "count": 128,
+    "unmounted": 0,
+    "withMiddleware": 128,
+    "sample": [
+      "GET /api/pricing (server/routes/pricing.js:441) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]",
+      "GET /api/pricing/cursor (server/routes/pricing.js:447) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]",
+      "PUT /api/pricing/cursor (server/routes/pricing.js:451) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]",
+      "DELETE /api/pricing/cursor/:pattern (server/routes/pricing.js:481) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]",
+      "PUT /api/pricing (server/routes/pricing.js:493) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]",
+      "GET /api/pricing/gpt (server/routes/pricing.js:615) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]",
+      "PUT /api/pricing/gpt (server/routes/pricing.js:620) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]",
+      "DELETE /api/pricing/gpt/:pattern (server/routes/pricing.js:670) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" }), tokenGuard]"
+    ]
+  },
+  "requests": {
+    "callSites": 111,
+    "byEvidence": {
+      "unresolved": 1,
+      "static": 110
+    },
+    "byMethod": {
+      "GET": 60,
+      "POST": 30,
+      "PUT": 8,
+      "DELETE": 10,
+      "PATCH": 3
+    },
+    "matchedToRoute": 110,
+    "sample": [
+      "GET /api{path} [unresolved] → 0 route(s)  (client/src/lib/api.ts:505)",
+      "GET /api/updates/status [static] → 1 route(s)  (client/src/lib/api.ts:558)",
+      "POST /api/updates/check [static] → 1 route(s)  (client/src/lib/api.ts:569)",
+      "GET /api/stats?… [static] → 1 route(s)  (client/src/lib/api.ts:590)",
+      "GET /api/sessions/facets?… [static] → 2 route(s)  (client/src/lib/api.ts:615)",
+      "GET /api/sessions?… [static] → 1 route(s)  (client/src/lib/api.ts:643)",
+      "GET /api/sessions/{id}?… [static] → 1 route(s)  (client/src/lib/api.ts:704)",
+      "GET /api/sessions/{id}/stats?… [static] → 1 route(s)  (client/src/lib/api.ts:722)",
+      "GET /api/sessions/{id}/transcripts?… [static] → 1 route(s)  (client/src/lib/api.ts:741)",
+      "GET /api/sessions/{id}/transcript?… [static] → 1 route(s)  (client/src/lib/api.ts:773)",
+      "GET /api/agents?… [static] → 1 route(s)  (client/src/lib/api.ts:823)",
+      "GET /api/events?… [static] → 1 route(s)  (client/src/lib/api.ts:878)"
+    ],
+    "unmatchedSample": [
+      "GET /api{path} [unresolved]  (client/src/lib/api.ts:505)"
+    ]
+  },
+  "sql": {
+    "routeHandlersReachingSql": "76 / 128"
+  },
+  "memoryMB": 673
+}

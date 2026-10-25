@@ -1,0 +1,8 @@
+model Item {
+  id    String @id
+  title String
+}
+
+model AuditLog {
+  id String @id
+}

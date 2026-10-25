@@ -1,0 +1,12 @@
+{
+  "name": "@tracenaut/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "tracenaut": "dist/cli.js" },
+  "dependencies": {
+    "shiki": "4.5.0",
+    "typescript": "5.9.3",
+    "ws": "8.22.0"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "repo": "https://github.com/umami-software/umami@559e3c607c23d2c72d9bd4f6481bda428255323c",
+  "services": [
+    "umami:browser:"
+  ],
+  "timings": {
+    "routesMs": 966,
+    "requestsMs": 4153,
+    "totalMs": 5209
+  },
+  "routes": {
+    "count": 203,
+    "unmounted": 0,
+    "withMiddleware": 0,
+    "sample": [
+      "POST /api/send (src/app/api/send/route.ts:75) mw=[]",
+      "GET /p/:slug (src/app/(collect)/p/[slug]/route.ts:12) mw=[]",
+      "GET /q/:slug (src/app/(collect)/q/[slug]/route.ts:10) mw=[]",
+      "GET /compat/api/reports (src/app/(compat)/compat/api/reports/route.ts:14) mw=[]",
+      "POST /compat/api/reports (src/app/(compat)/compat/api/reports/route.ts:59) mw=[]",
+      "GET /compat/api/reports/:reportId (src/app/(compat)/compat/api/reports/[reportId]/route.ts:7) mw=[]",
+      "POST /compat/api/reports/:reportId (src/app/(compat)/compat/api/reports/[reportId]/route.ts:29) mw=[]",
+      "DELETE /compat/api/reports/:reportId (src/app/(compat)/compat/api/reports/[reportId]/route.ts:64) mw=[]"
+    ]
+  },
+  "requests": {
+    "callSites": 135,
+    "byEvidence": {
+      "unresolved": 56,
+      "static": 79
+    },
+    "byMethod": {
+      "GET": 113,
+      "?": 1,
+      "DELETE": 3,
+      "POST": 16,
+      "PUT": 2
+    },
+    "matchedToRoute": 76,
+    "sample": [
+      "GET {input} [unresolved] → 0 route(s)  (packages/api-client/src/http.ts:230)",
+      "GET {url}/api/heartbeat [unresolved] → 0 route(s)  (scripts/test-api.ts:190)",
+      "GET {expr}/api/heartbeat [unresolved] → 0 route(s)  (scripts/test-api.ts:213)",
+      "? {url} [unresolved] → 0 route(s)  (src/lib/fetch.ts:18)",
+      "GET {path}?… [unresolved] → 0 route(s)  (src/lib/fetch.ts:44)",
+      "DELETE {path}?… [unresolved] → 0 route(s)  (src/lib/fetch.ts:48)",
+      "POST {path} [unresolved] → 0 route(s)  (src/lib/fetch.ts:52)",
+      "PUT {path} [unresolved] → 0 route(s)  (src/lib/fetch.ts:56)",
+      "GET {base}{url}?… [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:41)",
+      "POST {base}{url} [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:48)",
+      "PUT {base}{url} [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:55)",
+      "DELETE {base}{url}?… [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:62)"
+    ],
+    "unmatchedSample": [
+      "GET {input} [unresolved]  (packages/api-client/src/http.ts:230)",
+      "GET {url}/api/heartbeat [unresolved]  (scripts/test-api.ts:190)",
+      "GET {expr}/api/heartbeat [unresolved]  (scripts/test-api.ts:213)",
+      "? {url} [unresolved]  (src/lib/fetch.ts:18)",
+      "GET {path}?… [unresolved]  (src/lib/fetch.ts:44)",
+      "DELETE {path}?… [unresolved]  (src/lib/fetch.ts:48)",
+      "POST {path} [unresolved]  (src/lib/fetch.ts:52)",
+      "PUT {path} [unresolved]  (src/lib/fetch.ts:56)",
+      "GET {base}{url}?… [unresolved]  (src/components/hooks/useApi.ts:41)",
+      "POST {base}{url} [unresolved]  (src/components/hooks/useApi.ts:48)"
+    ]
+  },
+  "sql": {
+    "routeHandlersReachingSql": "198 / 203"
+  },
+  "memoryMB": 411
+}

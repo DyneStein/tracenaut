@@ -1,0 +1,1 @@
+{ "services": [ { "name": "web", "root": "web", "kind": "browser" }, { "name": "server", "root": "server", "kind": "node" } ] }

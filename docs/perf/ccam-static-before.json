@@ -1,0 +1,70 @@
+{
+  "repo": "https://github.com/hoangsonww/Claude-Code-Agent-Monitor@3cb22ae4a4e2ca31145351e1d73e05d0ff41f2dc",
+  "services": [
+    "web:browser:client",
+    "api:node:server"
+  ],
+  "timings": {
+    "routesMs": 672,
+    "requestsMs": 41813,
+    "totalMs": 47318
+  },
+  "routes": {
+    "count": 128,
+    "unmounted": 0,
+    "withMiddleware": 128,
+    "sample": [
+      "GET /api/pricing (server/routes/pricing.js:441) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]",
+      "GET /api/pricing/cursor (server/routes/pricing.js:447) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]",
+      "PUT /api/pricing/cursor (server/routes/pricing.js:451) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]",
+      "DELETE /api/pricing/cursor/:pattern (server/routes/pricing.js:481) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]",
+      "PUT /api/pricing (server/routes/pricing.js:493) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]",
+      "GET /api/pricing/gpt (server/routes/pricing.js:615) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]",
+      "PUT /api/pricing/gpt (server/routes/pricing.js:620) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]",
+      "DELETE /api/pricing/gpt/:pattern (server/routes/pricing.js:670) mw=[cors(corsOptions()), hostGuard, express.json({ limit: \"1mb\" })]"
+    ]
+  },
+  "requests": {
+    "callSites": 109,
+    "byEvidence": {
+      "unresolved": 35,
+      "static": 74
+    },
+    "byMethod": {
+      "GET": 103,
+      "POST": 5,
+      "DELETE": 1
+    },
+    "matchedToRoute": 47,
+    "sample": [
+      "GET /api{path} [unresolved] → 0 route(s)  (client/src/lib/api.ts:505)",
+      "GET /api/updates/status [static] → 1 route(s)  (client/src/lib/api.ts:558)",
+      "GET /api/updates/check [static] → 0 route(s)  (client/src/lib/api.ts:569)",
+      "GET /api/stats?{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:590)",
+      "GET /api/sessions/facets{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:615)",
+      "GET /api/sessions{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:643)",
+      "GET /api/sessions/{id}{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:704)",
+      "GET /api/sessions/{id}/stats{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:722)",
+      "GET /api/sessions/{id}/transcripts{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:741)",
+      "GET /api/sessions/{id}/transcript{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:773)",
+      "GET /api/agents{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:823)",
+      "GET /api/events{expr} [unresolved] → 0 route(s)  (client/src/lib/api.ts:878)"
+    ],
+    "unmatchedSample": [
+      "GET /api{path} [unresolved]  (client/src/lib/api.ts:505)",
+      "GET /api/updates/check [static]  (client/src/lib/api.ts:569)",
+      "GET /api/stats?{expr} [unresolved]  (client/src/lib/api.ts:590)",
+      "GET /api/sessions/facets{expr} [unresolved]  (client/src/lib/api.ts:615)",
+      "GET /api/sessions{expr} [unresolved]  (client/src/lib/api.ts:643)",
+      "GET /api/sessions/{id}{expr} [unresolved]  (client/src/lib/api.ts:704)",
+      "GET /api/sessions/{id}/stats{expr} [unresolved]  (client/src/lib/api.ts:722)",
+      "GET /api/sessions/{id}/transcripts{expr} [unresolved]  (client/src/lib/api.ts:741)",
+      "GET /api/sessions/{id}/transcript{expr} [unresolved]  (client/src/lib/api.ts:773)",
+      "GET /api/agents{expr} [unresolved]  (client/src/lib/api.ts:823)"
+    ]
+  },
+  "sql": {
+    "routeHandlersReachingSql": "33 / 128"
+  },
+  "memoryMB": 712
+}

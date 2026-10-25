@@ -1,0 +1,8 @@
+{
+  "name": "@tracenaut/assets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.mjs",
+  "description": "TraceNaut technology registry, icon family, brand marks and preview gallery"
+}

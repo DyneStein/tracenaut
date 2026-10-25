@@ -1,0 +1,12 @@
+{
+  "name": "@tracenaut/node-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./dist/register.js" },
+  "description": "Opt-in runtime agent: node --import @tracenaut/node-agent app.js",
+  "dependencies": {
+    "@babel/core": "7.29.7",
+    "@tracenaut/instrument": "0.1.0"
+  }
+}

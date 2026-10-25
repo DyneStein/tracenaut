@@ -1,0 +1,14 @@
+{
+  "name": "@tracenaut/vite-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "exports": { ".": "./dist/index.js" },
+  "dependencies": {
+    "@babel/core": "7.29.7",
+    "@tracenaut/instrument": "0.1.0"
+  },
+  "peerDependencies": { "vite": ">=5" }
+}

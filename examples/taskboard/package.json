@@ -1,0 +1,25 @@
+{
+  "name": "taskboard-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:web": "vite --config web/vite.config.ts",
+    "dev:api": "node --import @tracenaut/node-agent server/index.js",
+    "dev:api:plain": "node server/index.js"
+  },
+  "dependencies": {
+    "express": "5.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tracenaut/node-agent": "0.1.0",
+    "@tracenaut/vite-plugin": "0.1.0",
+    "@types/express": "5.0.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "vite": "8.3.5"
+  }
+}

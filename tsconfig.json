@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "allowJs": true,
+    "checkJs": false,
+    "paths": {
+      "@tracenaut/protocol": ["./packages/protocol/src/index.ts"],
+      "@tracenaut/instrument": ["./packages/instrument/src/index.ts"],
+      "@tracenaut/instrument/runtime": ["./packages/instrument/src/runtime.ts"],
+      "@tracenaut/assets": ["./packages/assets/src/index.mjs"]
+    }
+  },
+  "include": ["packages/*/src"]
+}

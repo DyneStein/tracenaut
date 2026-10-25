@@ -1,0 +1,7 @@
+{
+  "services": [
+    { "name": "web", "root": "web", "kind": "browser" },
+    { "name": "api", "root": "server", "kind": "node" }
+  ],
+  "editor": "vscode"
+}
