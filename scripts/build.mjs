@@ -32,6 +32,9 @@ const jobs = [
   only('packages/daemon/src/analysis/index.ts', { ...nodeCommon, outfile: 'packages/daemon/dist/analysis.js' }),
   only('packages/vite-plugin/src/index.ts', { ...nodeCommon, outfile: 'packages/vite-plugin/dist/index.js' }),
   only('packages/node-agent/src/register.ts', { ...nodeCommon, outfile: 'packages/node-agent/dist/register.js' }),
+  only('packages/next-plugin/src/index.ts', { ...nodeCommon, format: 'cjs', outfile: 'packages/next-plugin/dist/index.cjs', footer: { js: 'module.exports = Object.assign(module.exports.default, module.exports);' } }),
+  only('packages/next-plugin/src/loader.ts', { ...nodeCommon, format: 'cjs', outfile: 'packages/next-plugin/dist/loader.cjs', footer: { js: 'module.exports = module.exports.default;' } }),
+  only('packages/node-agent/src/wire.ts', { ...nodeCommon, outfile: 'packages/node-agent/dist/wire.js' }),
   only('packages/instrument/src/index.ts', { ...nodeCommon, outfile: 'packages/instrument/dist/index.js' }),
   only('packages/client/src/index.tsx', {
     outfile: 'packages/client/dist/client.js',

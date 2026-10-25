@@ -22,7 +22,6 @@ export function Icon3D({ name, size = 24, label }: { name: string; size?: number
       aria-hidden={label ? undefined : 'true'}
       draggable={false}
       decoding="async"
-      loading="lazy"
       onError={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')}
     />
   );
@@ -38,6 +37,7 @@ export const STEP_ICON: Record<StepType, string> = {
   database: 'database',
   response: 'response',
   'ui-update': 'update',
+  navigation: 'route',
   unknown: 'unknown',
 };
 

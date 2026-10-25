@@ -32,7 +32,13 @@ export function readSession(): SessionInfo | undefined {
   }
 }
 
+/** On exit, mark the session stopped but keep the token, so a restart can reuse it. */
 export function clearSession(pid: number) {
   const current = readSession();
-  if (current?.pid === pid) rmSync(SESSION_FILE, { force: true });
+  if (current?.pid !== pid) return;
+  try {
+    writeSession({ ...current, pid: 0 });
+  } catch {
+    rmSync(SESSION_FILE, { force: true });
+  }
 }

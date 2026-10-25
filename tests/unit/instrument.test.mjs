@@ -107,3 +107,15 @@ test('the Vite plugin never breaks the app: unparsable files are served unchange
     console.warn = warn;
   }
 });
+
+test('modules that load before the runtime still report once it arrives (Next.js load order)', () => {
+  delete globalThis.__TRACENAUT__;
+  delete globalThis.__TRACENAUT_SHIM__;
+  const code = run('function early() { return 1; }\nglobalThis.__early = early;', 'src/early.js');
+  new Function(code)();
+  assert.equal(globalThis.__early(), 1); // no runtime yet: a no-op, behaviour unchanged
+  const ctx = newProbeContext();
+  globalThis.__TRACENAUT__ = createProbeRuntime(() => ctx, () => 0);
+  globalThis.__early();
+  assert.deepEqual(ctx.calls.map((c) => c.id), ['src/early.js|1|0|f|early']);
+});

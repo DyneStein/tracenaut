@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { StackResult, StackTech, TechKind } from '@tracenaut/protocol';
 import { CATEGORIES, TECHNOLOGIES, supportOf } from '@tracenaut/assets';
 import { IGNORED_DIRS, type Workspace } from './workspace.js';
+import { packageOf } from './journey/tech.js';
 
 /**
  * "Built with": which technologies the repository uses, each with the evidence that shows
@@ -150,5 +151,15 @@ export function detectStack(ws: Workspace): StackResult {
       support: supportOf(t),
     });
   }
-  return { techs, scanned: { files: files.length, ms: Date.now() - t0, truncated } };
+  // Dependencies no registry signal claimed: listed by name, in their own words.
+  const claimed = new Set(TECHNOLOGIES.flatMap((t) => ((t.signals as Signals).npm ?? []).filter((n) => !n.endsWith('/'))));
+  const prefixes = TECHNOLOGIES.flatMap((t) => ((t.signals as Signals).npm ?? []).filter((n) => n.endsWith('/')));
+  const packages: NonNullable<StackResult['packages']> = [];
+  for (const [name, manifests] of deps) {
+    if (claimed.has(name) || prefixes.some((p) => name.startsWith(p)) || name.startsWith('@types/')) continue;
+    const info = packageOf(root, manifests[0], name);
+    packages.push({ name, description: info?.description, version: info?.version, local: info?.local || undefined, installed: !!info, manifest: manifests[0] });
+  }
+  packages.sort((a, b) => a.name.localeCompare(b.name));
+  return { techs, packages, scanned: { files: files.length, ms: Date.now() - t0, truncated } };
 }

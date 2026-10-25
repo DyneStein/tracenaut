@@ -62,7 +62,9 @@ export type RelationKind =
   | 'routes-to'
   | 'middleware'
   | 'queries'
-  | 'implemented-by';
+  | 'implemented-by'
+  /** Changes the page through a router (Next.js, React Router) or the browser's location. */
+  | 'navigates';
 
 export interface Relation {
   kind: RelationKind;
@@ -248,6 +250,15 @@ export interface FrontendTracePayload {
   action?: ActionRecord;
   /** True when the client marks root calls run by the event (`ev`); older clients do not. */
   eventMarks?: boolean;
+  /** The action replaced the whole page (a full page load); the new page was not recorded. */
+  navigatedAway?: boolean;
+  /** Live connections (WebSocket) that carried messages during the recording; counts only. */
+  sockets?: { url: string; sent: number; received: number; opened: boolean }[];
+  /**
+   * Functions the inspected element's code leads to, from its static journey. A call that ran
+   * later (a timer, a debounce) and is in this list was most likely scheduled by the action.
+   */
+  expected?: string[];
   calls: ProbeCallWire[];
   requests: ClientRequestRecord[];
   dropped: number;
@@ -255,18 +266,49 @@ export interface FrontendTracePayload {
 }
 
 export interface AgentSqlRecord {
+  /** SQL text with string literals redacted, or `find users` (MongoDB) / `GET` (Redis). */
   sql: string;
   op: string;
   /** Probe token that executed the statement. */
   caller: number;
   at: number;
-  durationMs: number;
+  durationMs?: number;
   rows?: number;
   error?: string;
+  /** Wire protocol it was read from; absent for driver-level capture (SQLite, pg API). */
+  protocol?: 'postgres' | 'mysql' | 'mongodb' | 'redis';
+  /**
+   * True when the statement was sent by the driver later (from its own queue or a timer),
+   * not while the request's code was running: then the link to this request is only likely.
+   */
+  deferred?: boolean;
+  /** Sent from the database connection's own queue: the sending request is not known. */
+  queued?: boolean;
+  /** Other (untraced) HTTP requests were being handled in this process when it was sent. */
+  busy?: boolean;
+}
+
+/** An HTTP request the server itself made while handling a traced request. */
+export interface AgentOutgoingRecord {
+  /** Key the downstream service reports its side under (`<parent>.<n>`), when it is local. */
+  key?: string;
+  method: string;
+  /** Origin + path, sensitive query values redacted. */
+  url: string;
+  caller: number;
+  at: number;
+  status?: number;
+  durationMs?: number;
+  error?: string;
+  /** Sent to a port this same process listens on. */
+  self?: boolean;
 }
 
 export interface AgentRequestRecord {
   seq: number;
+  /** Correlation key from the trace header: the browser's seq (`3`) or a nested call (`3.1`). */
+  key?: string;
+  outgoing?: AgentOutgoingRecord[];
   method: string;
   url: string;
   status?: number;
@@ -285,6 +327,8 @@ export interface TraceCall {
   at: number;
   /** Root calls: run by the recorded event's dispatch (a handler), not by a timer or frame. */
   byEvent?: boolean;
+  /** Root calls not run by the event, but which the element's code leads to (so likely scheduled by it). */
+  scheduled?: boolean;
   durationMs?: number;
   children: TraceCall[];
   /** Requests issued while this call was on top of the stack. */
@@ -303,10 +347,23 @@ export interface TraceRequest {
     service: string;
     route?: string;
     routeNode?: GraphNode;
+    /**
+     * runtime: the framework reported the route, or the route's handler was seen running.
+     * inferred: only the method and path match the route.
+     */
+    routeEvidence?: 'runtime' | 'inferred';
+    /** The React Server Action that handled it (seen running), when it was one. */
+    action?: string;
     calls: TraceCall[];
     sql: AgentSqlRecord[];
+    /** Requests this server made to other services, not attributable to one of its calls. */
+    requests?: TraceRequest[];
     dropped: number;
   };
+  /** Made by server code (to another service), not by the browser. */
+  fromServer?: boolean;
+  /** Made by a server to itself (same process). */
+  toSelf?: boolean;
   /** Why there is no server-side detail, if there is none. */
   serverNote?: string;
 }
@@ -323,6 +380,10 @@ export interface TraceResult {
   notes: string[];
   /** Root calls carry `byEvent` (which ones the user's event ran). */
   eventMarks?: boolean;
+  /** Live connections (WebSocket) that carried messages during the recording. */
+  sockets?: FrontendTracePayload['sockets'];
+  /** Database statements seen on a server during the recording that no request could claim. */
+  unattributed?: { service: string; sql: AgentSqlRecord }[];
   /** The same execution, told as a journey. */
   flow?: Flow;
 }
@@ -360,6 +421,11 @@ export interface TechRef {
   /** Plain explanation from the registry, used when no curated concept card exists. */
   what?: string;
   effect?: string;
+  /**
+   * Not in TraceNaut's registry: named and described by the package's own package.json.
+   * Shown with the step, not in the zone header, so beginners are not flooded.
+   */
+  fromPackage?: { version?: string; homepage?: string; local?: boolean };
 }
 
 /** A technology found in the repository, with the evidence and what TraceNaut can do with it. */
@@ -378,6 +444,8 @@ export interface StackTech {
 
 export interface StackResult {
   techs: StackTech[];
+  /** Other dependencies, not in TraceNaut's registry, described by their own package.json. */
+  packages?: { name: string; description?: string; version?: string; local?: boolean; installed: boolean; manifest: string }[];
   scanned: { files: number; ms: number; truncated: boolean };
 }
 
@@ -391,6 +459,7 @@ export type StepType =
   | 'database'
   | 'response'
   | 'ui-update'
+  | 'navigation'
   | 'unknown';
 
 export interface FlowFunction {
@@ -444,6 +513,8 @@ export interface FlowStep {
    * action (timers, animation frames, effects that send nothing). Long runs are folded.
    */
   incidental?: boolean;
+  /** request: sent by a server (to another service or itself), not by the browser. */
+  fromServer?: boolean;
   /** response: the different answers the code can give (one per status), for drawing branches. */
   branches?: { status: number | '?'; label: string }[];
   /** Observed-only: e.g. HTTP status, SQL rows. */

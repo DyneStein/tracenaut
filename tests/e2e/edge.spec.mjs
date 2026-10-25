@@ -174,3 +174,55 @@ test('the element replica never copies what was typed into a password field', as
   const html = await page.evaluate(() => document.querySelector('tracenaut-root').shadowRoot.innerHTML);
   expect(html).not.toContain('hunter2-very-secret');
 });
+
+test('an action that loads a whole new page is still recorded, and says where it stopped', async ({ page }) => {
+  await page.goto('/');
+  await inspect(page, signInButton(page));
+  const p = panel(page);
+  await expect(p.locator('.j-question')).toHaveText('What happens when you click “Sign in”?');
+  // A plain link that reloads the page (as many logins and logouts do).
+  await page.evaluate(() => {
+    const a = document.createElement('a');
+    a.href = '/?reloaded=1';
+    a.textContent = 'Full reload';
+    a.id = 'full-reload';
+    document.body.prepend(a);
+  });
+  await p.locator('.watch-btn').click();
+  await expect(p.locator('.j-armed')).toContainText('Now use the page');
+  await page.locator('#full-reload').click();
+  await page.waitForURL('**/?reloaded=1');
+  const p2 = panel(page);
+  await expect(p2.locator('.j-question')).toContainText('What happened', { timeout: 20_000 });
+  await expect(p2.locator('.step', { has: page.locator('.step-title', { hasText: 'The browser loaded a new page' }) })).toHaveCount(1);
+});
+
+test('messages on a live WebSocket connection are counted, never read', async ({ page }) => {
+  const { WebSocketServer } = await import('ws');
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise((r) => wss.once('listening', r));
+  wss.on('connection', (ws) => ws.on('message', () => ws.send('reply-with-private-content')));
+  try {
+    await page.goto('/');
+    await inspect(page, signInButton(page));
+    const p = panel(page);
+    await page.getByLabel('Password').fill('analytical');
+    await page.evaluate((port) => {
+      window.__ws = new WebSocket(`ws://127.0.0.1:${port}/live`);
+      return new Promise((r) => window.__ws.addEventListener('open', r));
+    }, wss.address().port);
+    await p.locator('.watch-btn').click();
+    await expect(p.locator('.j-armed')).toContainText('Now use the page');
+    await page.evaluate(() => document.addEventListener('click', () => window.__ws.send('secret-message'), { once: true, capture: true }));
+    await signInButton(page).click();
+    await expect(p.locator('.j-question')).toHaveText('What happened when you clicked “Sign in”?', { timeout: 20_000 });
+    const step = p.locator('.step', { has: page.locator('.step-title', { hasText: 'Messages over a live connection' }) });
+    await expect(step.locator('.step-sub')).toContainText('1 sent · 1 received');
+    await expect(p).not.toContainText('secret-message');
+    await expect(p).not.toContainText('reply-with-private-content');
+    // It is not counted as one of the browser's requests.
+    await expect(p.locator('.j-headline')).toContainText('then 1 more request followed');
+  } finally {
+    wss.close();
+  }
+});

@@ -115,7 +115,15 @@ client: JourneyView (tech map + steps) · concept library + syntax spans (hover/
 - **Explanations are curated, application facts are derived.** General definitions ("what is HTTP") ship with TraceNaut; "in this app" and "how TraceNaut knows" come from evidence. No AI is involved.
 - **Syntax spans** come from the TypeScript syntax tree (async/await, JSX, destructuring, `?` SQL placeholders…), attached to every code view.
 
-## 7. Recommended next steps
+## 7. A technology-agnostic observation layer
+
+Supporting stacks one adapter at a time does not scale, so the engine observes the boundaries every web stack must cross and treats technology knowledge as optional enrichment:
+
+- **Browser:** JSX locations and function probes are inserted by one Babel transform, hosted by thin bundler plugins (Vite, Next.js loader for Turbopack and webpack). Probes find the runtime at call time, so load order does not matter. Causality comes from the DOM: a call counts as caused by an action only if it starts while that action's events are dispatched (`eventPhase`), or if the element's static journey leads to it (then *likely*).
+- **Server:** the agent hooks Node's `http.Server` (any framework), outgoing requests via `diagnostics_channel` (`http.client.*`, `undici:*`, propagating the trace header to local services only), and **database wire protocols** by reading `net.Socket` writes (PostgreSQL Query/Parse/Bind/Execute, MySQL COM_QUERY, MongoDB OP_MSG, Redis RESP), replies by wrapping the socket's `emit` without adding listeners. Attribution: AsyncLocalStorage; a write whose async trigger chain leads back to the connection's own callbacks is "from the driver's queue" and never linked with certainty.
+- **Knowledge as enrichment:** routes come from framework syntax where known and from runtime handler observation always; libraries are named from the registry or from their own `package.json`; a few library contracts are encoded explicitly (TanStack Query's `mutationFn`, router navigation by type, React form actions), always as *likely* links.
+
+## 8. Recommended next steps
 
 1. **AI explanations, grounded and opt-in.** "Explain" on any node, sending only that node's code plus its evidence-tagged relations; never sent without per-repository consent; local-model option. Deferred deliberately because it has privacy/cost implications that need a product decision.
 2. **More stacks through the same seams.** A Next.js (webpack/Turbopack) instrumentation plugin so Next apps can be inspected in the browser, not only analysed; Vue/Svelte location attributes; Mongoose/Drizzle query analysis; Python backends (pyright + an import-hook agent); OTel/OTLP ingestion for services TraceNaut does not instrument.

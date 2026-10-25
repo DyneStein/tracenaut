@@ -16,6 +16,8 @@ export interface ExplainExtra {
   effect?: string;
   asset?: string;
   logo?: boolean;
+  /** Not in TraceNaut's registry: described by the package's own package.json. */
+  fromPackage?: { version?: string; homepage?: string; local?: boolean };
 }
 
 interface Popover {
@@ -113,7 +115,14 @@ export function ExplainProvider({ children, bounds }: { children: preact.Compone
 function ConceptCard({ pop, bounds, onClose, onEnter, onLeave }: { pop: Popover; bounds?: DOMRect; onClose: () => void; onEnter: () => void; onLeave: () => void }) {
   const curated = concept(pop.id);
   const x = pop.extra;
-  const c: Concept | undefined = curated ?? (x?.what ? { name: x.name ?? pop.id, kind: (x.kind ?? 'idea') as ConceptKind, short: x.what } : undefined);
+  const pkg = x?.fromPackage;
+  const c: Concept | undefined =
+    curated ??
+    (x?.what
+      ? { name: x.name ?? pop.id, kind: (x.kind ?? 'idea') as ConceptKind, short: x.what }
+      : pkg
+        ? { name: x?.name ?? pop.id, kind: 'library', short: pkg.local ? 'A package that is part of this project itself.' : 'A package this project installs from npm. It does not describe itself in its package.json.' }
+        : undefined);
   const effect = x?.effect ?? curated?.effect;
   const [more, setMore] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -162,6 +171,12 @@ function ConceptCard({ pop, bounds, onClose, onEnter, onLeave }: { pop: Popover;
       </div>
       <div class="concept-q">What is it?</div>
       <p class="concept-short">{c.short}</p>
+      {pkg && !curated ? (
+        <div class="concept-source">
+          {pkg.local ? 'Part of this repository' : 'In its own words, from its package.json'}
+          {pkg.version ? ` · version ${pkg.version}` : ''}
+        </div>
+      ) : null}
       {c.example ? <code class="concept-example">{c.example}</code> : null}
       {x?.role ? (
         <div class="concept-app">

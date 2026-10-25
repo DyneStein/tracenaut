@@ -1,6 +1,9 @@
 import type { TechRef } from '@tracenaut/protocol';
 import { TECHNOLOGIES } from '@tracenaut/assets';
 import type { Analyzer } from '../analysis/analyzer.js';
+import { readFileSync, realpathSync } from 'node:fs';
+import { builtinModules } from 'node:module';
+import path from 'node:path';
 
 /**
  * Identifies the technologies involved in a journey step from project evidence: file
@@ -43,6 +46,68 @@ const DB_DRIVERS: Record<string, string> = {
   mongoose: 'mongodb',
   '@prisma/client': 'prisma',
 };
+
+const NODE_BUILTIN = new Set(builtinModules);
+const realRoots = new Map<string, string>();
+const realRoot = (root: string) => {
+  let r = realRoots.get(root);
+  if (!r) {
+    try {
+      r = realpathSync(root);
+    } catch {
+      r = root;
+    }
+    realRoots.set(root, r);
+  }
+  return r;
+};
+const packageCache = new Map<string, PackageInfo | null>();
+interface PackageInfo {
+  name: string;
+  description?: string;
+  version?: string;
+  homepage?: string;
+  /** A package that lives in this repository (a workspace), not one downloaded from npm. */
+  local: boolean;
+}
+
+/**
+ * The installed package an import refers to, found the way Node finds it (node_modules folders
+ * from the importing file upwards). Path aliases (`@/x`, `~/x`) and missing packages give
+ * nothing rather than a guess.
+ */
+export function packageOf(repoRoot: string, file: string, specifier: string): PackageInfo | undefined {
+  if (/^(\.|\/|#|~\/|@\/|node:)/.test(specifier) || NODE_BUILTIN.has(specifier.split('/')[0])) return undefined;
+  const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+  if (!/^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name)) return undefined;
+  for (let dir = path.dirname(path.join(repoRoot, file)); dir.startsWith(repoRoot); dir = path.dirname(dir)) {
+    const manifest = path.join(dir, 'node_modules', name, 'package.json');
+    const key = manifest;
+    if (packageCache.has(key)) {
+      const hit = packageCache.get(key);
+      if (hit) return hit;
+    } else {
+      let info: PackageInfo | null = null;
+      try {
+        const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
+        const real = realpathSync(path.dirname(manifest));
+        info = {
+          name: pkg.name ?? name,
+          description: typeof pkg.description === 'string' ? pkg.description.slice(0, 240) : undefined,
+          version: pkg.version,
+          homepage: typeof pkg.homepage === 'string' ? pkg.homepage : undefined,
+          local: real.startsWith(realRoot(repoRoot)) && !real.includes(`${path.sep}node_modules${path.sep}`),
+        };
+      } catch {
+        info = null;
+      }
+      packageCache.set(key, info);
+      if (info) return info;
+    }
+    if (dir === repoRoot) break;
+  }
+  return undefined;
+}
 
 export function fromRegistry(id: string, evidence: string, role?: string): TechRef | undefined {
   const t = byId.get(id);
@@ -100,8 +165,25 @@ export class TechDetector {
           continue;
         }
         const t = techForModule(imp.module);
-        if (!t || out.has(t.id) || t.category === 'language') continue;
-        out.set(t.id, fromRegistry(t.id, `${base} imports ${what}`)!);
+        if (t) {
+          if (!out.has(t.id) && t.category !== 'language') out.set(t.id, fromRegistry(t.id, `${base} imports ${what}`)!);
+          continue;
+        }
+        // Any other package: described by its own package.json, so TraceNaut never needs a
+        // registry entry to say what an imported library is.
+        const pkg = packageOf(this.analyzer.ws.repoRoot, file, imp.module);
+        if (pkg && !out.has(`pkg:${pkg.name}`)) {
+          out.set(`pkg:${pkg.name}`, {
+            id: `pkg:${pkg.name}`,
+            name: pkg.name,
+            kind: 'library',
+            evidence: `${base} imports ${what}; the description comes from the package's own package.json`,
+            role: pkg.local ? 'a package that is part of this project' : 'a library this code uses',
+            asset: 'library',
+            what: pkg.description,
+            fromPackage: { version: pkg.version, homepage: pkg.homepage, local: pkg.local || undefined },
+          });
+        }
       }
       return [...out.values()];
     });
@@ -164,13 +246,22 @@ export class TechDetector {
   }
 
   /** Language + libraries for a set of files, de-duplicated, language first. */
-  forFiles(files: string[]): TechRef[] {
+  /**
+   * `used`: packages the step's functions actually call into. Libraries known only from their
+   * package.json are listed only when used, so a step does not list every import of its files.
+   */
+  forFiles(files: string[], used?: Set<string>): TechRef[] {
     const out = new Map<string, TechRef>();
     for (const f of files) {
       const lang = this.language(f);
       if (!out.has(lang.id)) out.set(lang.id, lang);
     }
-    for (const f of files) for (const lib of this.libraries(f)) if (!out.has(lib.id)) out.set(lib.id, lib);
+    for (const f of files)
+      for (const lib of this.libraries(f)) {
+        if (out.has(lib.id)) continue;
+        if (lib.fromPackage && !used?.has(lib.name)) continue;
+        out.set(lib.id, lib);
+      }
     return [...out.values()];
   }
 }

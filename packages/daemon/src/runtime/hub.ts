@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { WebSocket } from 'ws';
-import type { AgentRequestRecord, FrontendTracePayload, TraceResult } from '@tracenaut/protocol';
+import type { AgentRequestRecord, AgentSqlRecord, FrontendTracePayload, TraceResult } from '@tracenaut/protocol';
 import type { Analyzer } from '../analysis/analyzer.js';
 import { type Workspace, serviceForFile, toRel } from '../workspace.js';
 import { buildTrace, type AgentResult } from './merge.js';
@@ -16,7 +16,7 @@ interface AgentConn {
 type AgentMessage =
   | { type: 'hello'; pid: number; cwd: string; entry?: string; service?: string }
   | { type: 'started'; traceId: string }
-  | { type: 'result'; traceId: string; requests: AgentRequestRecord[] };
+  | { type: 'result'; traceId: string; requests: AgentRequestRecord[]; unattributed?: AgentSqlRecord[] };
 
 interface ActiveTrace {
   id: string;
@@ -76,8 +76,9 @@ export class RuntimeHub {
       if (!candidate) continue;
       const abs = path.resolve(msg.cwd, candidate);
       if (!abs.startsWith(this.ws.repoRoot)) continue;
+      // Any service: full-stack frameworks (Next.js) serve pages and API from one process.
       const svc = serviceForFile(this.ws, toRel(this.ws, abs));
-      if (svc?.kind === 'node') return svc.name;
+      if (svc) return svc.name;
     }
     return undefined;
   }
@@ -121,7 +122,7 @@ export class RuntimeHub {
     const results = await Promise.all(
       [...this.agents].map(async (a) => {
         const msg = await this.request<Extract<AgentMessage, { type: 'result' }>>(a, { type: 'stop', traceId: id }, `result:${id}`);
-        return msg ? ({ service: a.service, requests: msg.requests } satisfies AgentResult) : undefined;
+        return msg ? ({ service: a.service, requests: msg.requests, unattributed: msg.unattributed } as AgentResult) : undefined;
       }),
     );
     return buildTrace(this.analyzer, id, payload, results.filter((r): r is AgentResult => !!r), this.connectedStatus());

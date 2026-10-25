@@ -10,7 +10,11 @@ function usage() {
   console.log(`TraceNaut — start from the running app, follow the code behind it.
 
 Usage:
-  tracenaut start [repo] [--port ${DEFAULT_PORT}]   Analyse a repository and serve the inspector
+  tracenaut start [repo] [--port ${DEFAULT_PORT}] [--new-token]
+                                           Analyse a repository and serve the inspector.
+                                           The access token is kept across restarts for the
+                                           same repository (open pages keep working);
+                                           --new-token replaces it.
   tracenaut status                         Show the running daemon
 
 TraceNaut reads your source code. It never starts or executes your application;
@@ -22,7 +26,10 @@ async function start(args: string[]) {
   const port = portFlag >= 0 ? Number(args[portFlag + 1]) : DEFAULT_PORT;
   const repoArg = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--port') ?? '.';
   const ws = loadWorkspace(path.resolve(repoArg));
-  const token = randomBytes(24).toString('hex');
+  // Reuse the previous token for the same repository, so pages and bundler-injected clients
+  // keep working across daemon restarts. It lives only in the owner-only session file.
+  const previous = readSession();
+  const token = !args.includes('--new-token') && previous?.repoRoot === ws.repoRoot && /^[a-f0-9]{48}$/.test(previous.token) ? previous.token : randomBytes(24).toString('hex');
   const { server, analyzer } = createDaemon(ws, token);
 
   server.listen(port, '127.0.0.1', () => {
@@ -63,5 +70,13 @@ const [command, ...rest] = process.argv.slice(2);
 if (command === 'start') await start(rest);
 else if (command === 'status') {
   const s = readSession();
-  console.log(s ? `Running: pid ${s.pid}, http://127.0.0.1:${s.port}, repo ${s.repoRoot}` : 'No TraceNaut daemon is running.');
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  console.log(s?.pid && alive(s.pid) ? `Running: pid ${s.pid}, http://127.0.0.1:${s.port}, repo ${s.repoRoot}` : 'No TraceNaut daemon is running.');
 } else usage();

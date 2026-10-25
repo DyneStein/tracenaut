@@ -26,6 +26,7 @@ const ACTION_EVENTS = ['pointerdown', 'keydown', 'submit', 'change', 'input', 'c
 const QUIET_MS = 700;
 const MAX_MS = 12_000;
 const ARM_TIMEOUT_MS = 90_000;
+const PENDING_KEY = 'tracenaut:pending-recording';
 
 class Recorder {
   state: RecorderState = { phase: 'idle' };
@@ -74,7 +75,9 @@ class Recorder {
     this.action = undefined;
     this.actionEvents = [];
     this.dispatched = [];
+    socketActivity(Infinity); // start counting from zero
     for (const type of ACTION_EVENTS) window.addEventListener(type, this.onEvent, true);
+    window.addEventListener('pagehide', this.onPageHide);
     this.armTimer = window.setTimeout(() => this.cancel(), ARM_TIMEOUT_MS);
     this.set({ phase: 'armed' });
     return new Promise((resolve) => (this.resolve = resolve));
@@ -90,6 +93,7 @@ class Recorder {
 
   private stopListening() {
     for (const type of ACTION_EVENTS) window.removeEventListener(type, this.onEvent, true);
+    window.removeEventListener('pagehide', this.onPageHide);
     clearInterval(this.timer);
     clearTimeout(this.armTimer);
   }
@@ -140,21 +144,55 @@ class Recorder {
     if (quiet || t - this.startedAt > MAX_MS) this.finish();
   }
 
-  private finish() {
-    this.stopListening();
-    const recorded = ctx;
-    ctx = null;
-    this.set({ phase: 'finishing' });
-    const payload: FrontendTracePayload = {
+  private payload(navigatedAway?: boolean): FrontendTracePayload {
+    return {
       action: this.action,
       eventMarks: true,
-      calls: recorded?.calls ?? [],
+      calls: ctx?.calls ?? [],
       requests: this.requests,
-      dropped: recorded?.dropped ?? 0,
+      dropped: ctx?.dropped ?? 0,
       durationMs: now() - this.startedAt,
+      navigatedAway: navigatedAway || undefined,
+      sockets: socketActivity(this.startedAt),
     };
+  }
+
+  private finish() {
+    this.stopListening();
+    const payload = this.payload();
+    ctx = null;
+    this.set({ phase: 'finishing' });
     this.resolve?.(payload);
     this.resolve = undefined;
+  }
+
+  /** Set by the panel: what to show next to the recording once it is finished. */
+  context?: Record<string, unknown>;
+
+  /**
+   * The action replaced the whole page (a full page load, e.g. after logging in). This page's
+   * code is about to stop, so what was recorded is kept in the tab's session storage; the
+   * TraceNaut client on the next page finishes the recording and shows it.
+   */
+  private onPageHide = () => {
+    if (this.state.phase !== 'recording') return;
+    try {
+      sessionStorage.setItem(PENDING_KEY, JSON.stringify({ traceId: this.traceId, payload: this.payload(true), context: this.context }));
+    } catch {
+      // Storage full or disabled: the recording is lost with the page.
+    }
+  };
+
+  /** A recording interrupted by a full page load, left by the previous page (read once). */
+  static takePending(): { traceId: string; payload: FrontendTracePayload; context?: Record<string, unknown> } | undefined {
+    try {
+      const raw = sessionStorage.getItem(PENDING_KEY);
+      if (!raw) return undefined;
+      sessionStorage.removeItem(PENDING_KEY);
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
   }
 
   done() {
@@ -188,6 +226,7 @@ class Recorder {
 }
 
 export const recorder = new Recorder();
+export const takePendingRecording = () => Recorder.takePending();
 
 // --- request observation ----------------------------------------------------------------
 
@@ -230,3 +269,54 @@ XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document 
   }
   return xhrSend.call(this, body);
 };
+
+// --- live connections (WebSocket): message counts during a recording, never contents ---
+
+interface SocketTally {
+  url: string;
+  sent: number;
+  received: number;
+  openedAt: number;
+  since: number;
+}
+const sockets = new Map<WebSocket, SocketTally>();
+const tally = (ws: WebSocket) => {
+  let t = sockets.get(ws);
+  if (!t) {
+    t = { url: redactQuery(ws.url.replace(/^(wss?:\/\/[^/]+)(.*)$/, '$1$2')), sent: 0, received: 0, openedAt: now(), since: 0 };
+    sockets.set(ws, t);
+  }
+  return t;
+};
+const NativeWebSocket = window.WebSocket;
+if (NativeWebSocket) {
+  const send = NativeWebSocket.prototype.send;
+  NativeWebSocket.prototype.send = function (this: WebSocket, data) {
+    if (recorder.recording) tally(this).sent++;
+    return send.call(this, data);
+  };
+  // Incoming messages are only visible on connections opened after TraceNaut loaded.
+  window.WebSocket = class extends NativeWebSocket {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      const t = tally(this);
+      t.openedAt = now();
+      this.addEventListener('message', () => {
+        if (recorder.recording) t.received++;
+      });
+      this.addEventListener('close', () => {
+        if (!recorder.recording) sockets.delete(this);
+      });
+    }
+  } as typeof WebSocket;
+}
+
+/** Connections that carried messages since `start`, then counters reset for the next recording. */
+function socketActivity(start: number) {
+  const out = [...sockets.values()].filter((t) => t.sent || t.received).map((t) => ({ url: t.url, sent: t.sent, received: t.received, opened: t.openedAt >= start }));
+  for (const t of sockets.values()) {
+    t.sent = 0;
+    t.received = 0;
+  }
+  return out.length ? out : undefined;
+}

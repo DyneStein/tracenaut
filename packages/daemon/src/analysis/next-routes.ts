@@ -18,6 +18,8 @@ import { toAbs } from '../workspace.js';
 
 const HTTP_EXPORTS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 const ROUTE_FILE = /\/route\.(m|c)?[jt]sx?$/;
+/** App Router pages: a GET to their address renders them (HTML, or an RSC payload on navigation). */
+const PAGE_FILE = /\/page\.(m|c)?[jt]sx?$/;
 const PAGE_API = /\/pages\/api\/(.+)\.(m|c)?[jt]sx?$/;
 
 function usesNext(project: ServiceProject) {
@@ -81,6 +83,33 @@ export function nextRoutes(project: ServiceProject): RouteRecord[] {
     const local = `/${file.slice(project.service.root ? project.service.root.length + 1 : 0)}`;
     let url: string | undefined;
     let appRouter = false;
+    if (PAGE_FILE.test(local)) {
+      const segs = local.split('/').filter(Boolean);
+      const appAt = segs.indexOf('app');
+      if (appAt !== 0 && !(appAt === 1 && segs[0] === 'src')) continue;
+      const page = exportedHandlers(sf).find((h) => h.name === 'default');
+      if (!page) continue;
+      const pageUrl = urlFromSegments(segs.slice(appAt + 1, -1));
+      const { line, col } = lineCol(sf, page.node.getStart(sf));
+      routes.push({
+        service: project.service.name,
+        method: 'GET',
+        path: pageUrl,
+        localPath: pageUrl,
+        file,
+        line,
+        col,
+        receiver: 'Next.js',
+        framework: 'next',
+        kind: 'page',
+        declared: `the page in ${file.split('/').slice(-2).join('/')}`,
+        node: page.node,
+        middleware: [],
+        handler: page.handler as ts.Expression,
+        mounted: true,
+      });
+      continue;
+    }
     if (ROUTE_FILE.test(local)) {
       const segs = local.split('/').filter(Boolean);
       const appAt = segs.indexOf('app');

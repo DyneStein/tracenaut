@@ -1,0 +1,1 @@
+{ "services": [ { "name": "fastify", "root": "fastify", "kind": "node" }, { "name": "hono", "root": "hono", "kind": "node" }, { "name": "koa", "root": "koa", "kind": "node" } ] }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { Flow, TraceResult } from '@tracenaut/protocol';
 import { api, onConnection } from '../api.js';
 import { describe, snapshot, type ElementSnapshot } from '../adapters.js';
-import { recorder, type RecorderState } from '../runtime.js';
+import { recorder, takePendingRecording, type RecorderState } from '../runtime.js';
 import { Badge, Icon, NavContext, type View } from './common.js';
 import { ElementView, HomeView, NodeView, TraceView, type ElementEntry } from './views.js';
 import { CERTAINTY, CertaintyGuide, JourneyView, type WatchControl } from './journey.js';
@@ -198,7 +198,11 @@ export function App({ host }: { host: HTMLElement }) {
       if (!compare) nav.open({ kind: 'trace', key });
       try {
         const { traceId } = await api.startTrace();
+        const expected = compare ? [...new Set(compare.steps.flatMap((s) => s.functions.map((f) => f.node.id)))].slice(0, 400) : undefined;
+        // Kept with the recording if the action replaces the whole page (see takePendingRecording).
+        recorder.context = { compare, snap, expected };
         const payload = await recorder.arm(traceId);
+        if (payload && expected) payload.expected = expected;
         if (!payload) {
           if (!compare) traces.current.set(key, { error: 'Recording cancelled.' });
           return;
@@ -217,6 +221,26 @@ export function App({ host }: { host: HTMLElement }) {
     },
     [nav],
   );
+
+  // A recording the previous page started before the action loaded this one: finish it here.
+  useEffect(() => {
+    const pending = takePendingRecording();
+    if (!pending) return;
+    const { compare, snap, expected } = (pending.context ?? {}) as { compare?: Flow; snap?: ElementSnapshot; expected?: string[] };
+    if (expected) pending.payload.expected = expected;
+    const key = ++keySeq.current;
+    api.finishTrace(pending.traceId, pending.payload).then(
+      (result) => {
+        traces.current.set(key, { result, compare, snap });
+        nav.open({ kind: 'trace', key });
+      },
+      (err) => {
+        traces.current.set(key, { error: String((err as Error).message ?? err), compare, snap });
+        nav.open({ kind: 'trace', key });
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const watch: WatchControl = {
     phase: recState.phase,

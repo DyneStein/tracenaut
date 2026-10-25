@@ -1,0 +1,38 @@
+{
+  "repo": "https://github.com/vercel/next-learn@bb2558441a6673ab76c89914c25018bffa27a2ba/dashboard/final-example",
+  "services": [
+    "web:browser:"
+  ],
+  "timings": {
+    "routesMs": 952,
+    "requestsMs": 177,
+    "totalMs": 1133
+  },
+  "routes": {
+    "count": 9,
+    "unmounted": 0,
+    "withMiddleware": 0,
+    "sample": [
+      "GET /query (app/query/route.ts:16) mw=[]",
+      "GET /seed (app/seed/route.ts:104) mw=[]",
+      "GET / (app/page.tsx:7) mw=[]",
+      "GET /dashboard (app/dashboard/(overview)/page.tsx:12) mw=[]",
+      "GET /dashboard/customers (app/dashboard/customers/page.tsx:9) mw=[]",
+      "GET /dashboard/invoices (app/dashboard/invoices/page.tsx:15) mw=[]",
+      "GET /dashboard/invoices/:id/edit (app/dashboard/invoices/[id]/edit/page.tsx:11) mw=[]",
+      "GET /dashboard/invoices/create (app/dashboard/invoices/create/page.tsx:10) mw=[]"
+    ]
+  },
+  "requests": {
+    "callSites": 0,
+    "byEvidence": {},
+    "byMethod": {},
+    "matchedToRoute": 0,
+    "sample": [],
+    "unmatchedSample": []
+  },
+  "sql": {
+    "routeHandlersReachingSql": "6 / 9"
+  },
+  "memoryMB": 359
+}

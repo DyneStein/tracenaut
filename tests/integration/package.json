@@ -1,0 +1,18 @@
+{
+  "name": "tracenaut-integration-apps",
+  "private": true,
+  "type": "module",
+  "description": "Real libraries the runtime validation runs against. Not part of TraceNaut's dependencies; install with: npm install --prefix tests/integration --ignore-scripts",
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.11",
+    "@electric-sql/pglite-socket": "0.2.14",
+    "@hono/node-server": "2.1.5",
+    "@koa/router": "15.7.0",
+    "drizzle-orm": "0.45.4",
+    "fastify": "5.12.7",
+    "hono": "4.13.14",
+    "koa": "3.2.1",
+    "pg": "8.23.1",
+    "postgres": "3.4.9"
+  }
+}

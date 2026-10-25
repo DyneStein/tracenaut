@@ -205,3 +205,16 @@ test('an element drawn by library code is not reported as doing nothing', async 
   assert.match(flow.steps[0].summary, /library code attached it/);
   assert.match(flow.steps[0].summary, /a click handler may change what happens/);
 });
+
+test('clicking the icon inside a submit button submits the form (not "nothing happens")', async () => {
+  const req = {
+    ...signInRequest,
+    element: { tag: 'svg', text: '', attributes: {} },
+    leaf: { tag: 'svg', runtimeHandlers: [] },
+  };
+  const [flow] = await journeyFor(req);
+  assert.doesNotMatch(flow.headline, /Nothing/);
+  assert.equal(flow.steps[0].subtitle, 'submits the form');
+  assert.match(flow.steps[0].summary, /icon is inside a submit button/);
+  assert.ok(flow.steps.some((s) => s.type === 'request' && s.subtitle === 'POST /api/auth/login'));
+});

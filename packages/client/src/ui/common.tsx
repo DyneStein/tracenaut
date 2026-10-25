@@ -299,6 +299,7 @@ const RELATION_VERB: Record<Relation['kind'], string> = {
   middleware: 'middleware',
   queries: 'SQL',
   'implemented-by': 'calls',
+  navigates: 'goes to',
 };
 
 export function RelationList({ relations, depth = 0, seen = new Set<string>() }: { relations: Relation[]; depth?: number; seen?: Set<string> }) {

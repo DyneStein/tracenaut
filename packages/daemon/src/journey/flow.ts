@@ -1,4 +1,5 @@
 import type {
+  AgentSqlRecord,
   CodeAnchor,
   Evidence,
   Flow,
@@ -38,6 +39,8 @@ const FN_KINDS = new Set(['function', 'hook', 'method', 'component']);
 
 type FnEvt = {
   t: 'fn';
+  /** Ran later, from a timer or debounce that the inspected element's code sets up. */
+  scheduled?: boolean;
   node: GraphNode;
   zone: 'browser' | 'server';
   ui: boolean;
@@ -49,6 +52,12 @@ type FnEvt = {
 };
 type ReqEvt = {
   t: 'request';
+  /** A React Server Action call: the framework posts the form/arguments to the server. */
+  serverAction?: string;
+  /** Sent by server code to another service (observed only). */
+  fromServer?: boolean;
+  /** …to the very same server (a framework fetching its own page data, e.g. after a redirect). */
+  toSelf?: boolean;
   node?: GraphNode;
   method: string;
   path: string;
@@ -76,12 +85,15 @@ type RouteEvt = {
   evidence: Ev;
   note?: string;
   missing?: string;
+  serverAction?: string;
 };
 type SqlEvt = {
   t: 'sql';
   /** SQL text, or for an ORM call the call itself (`Website.findUnique`): ORM calls carry no SQL. */
   text: string;
   orm?: { lib: 'Prisma'; model: string; op: string; access: 'read' | 'write'; schemaFile: string };
+  /** Observed on the wire: which database protocol carried it (SQL unless mongodb/redis). */
+  protocol?: 'postgres' | 'mysql' | 'mongodb' | 'redis';
   node?: GraphNode;
   owner: string;
   evidence: Ev;
@@ -89,8 +101,12 @@ type SqlEvt = {
   service?: string;
   error?: string;
 };
+type NavEvt = { t: 'navigate'; router: string; to?: string; owner: string; node: GraphNode };
 type RespEvt = {
   t: 'response';
+  serverAction?: string;
+  /** Where a Server Action sends the browser afterwards (redirect('/x')), when written literally. */
+  redirectTo?: string;
   routeId?: string;
   handlerId?: string;
   outcomes: { status: number | '?'; sends?: string[]; from: string; role: string }[];
@@ -102,6 +118,7 @@ type RespEvt = {
   error?: string;
 };
 type Evt =
+  | NavEvt
   | FnEvt
   | ReqEvt
   | RouteEvt
@@ -120,6 +137,7 @@ interface Acc {
   unknowns: { label: string; note: string }[];
   sql: SqlEvt[];
   afterUpdate?: boolean;
+  scheduled?: boolean;
   repeat?: number;
   nextIsRequest?: boolean;
   via?: string;
@@ -150,6 +168,15 @@ export class JourneyBuilder {
     // full-stack services (Next.js) whose server routes sit beside the browser code.
     const walk = (node: GraphNode, evidence: Ev, note: string | undefined, calledBy: string | undefined, depth: number, side?: 'server') => {
       if (visited.has(node.id) || depth > 14 || fnCount >= 60) return;
+      // Browser code calling a Server Action: the call crosses to the server here.
+      if (side !== 'server' && this.a.isServerAction(node.id)) {
+        const crossing: Ev = evidence === 'unresolved' ? 'unresolved' : 'static';
+        events.push({ t: 'request', method: 'POST', path: '(to this page)', evidence: crossing, owner: calledBy ?? 'the page', serverAction: node.label, node });
+        events.push({ t: 'route', node: undefined, service: node.source?.service, middleware: [], evidence: crossing, serverAction: node.label });
+        walk(node, evidence, note, 'the Server Action call', depth + 1, 'server');
+        events.push({ t: 'response', outcomes: [], cookies: [], evidence: crossing, serverAction: node.label, redirectTo: this.a.redirectTarget(node.id) });
+        return;
+      }
       visited.add(node.id);
       fnCount++;
       const fn = this.a.fnById(node.id);
@@ -159,7 +186,12 @@ export class JourneyBuilder {
         if (r.kind === 'requests') {
           // A wrapper's own fetch(`/api${path}`) was already resolved at its call site.
           if (viaResolved.has(node.id) && r.evidence === 'unresolved') continue;
+          // Inside a generic request helper (its address comes from its parameters), the
+          // helper's own request is already shown where the helper is called.
+          if (r.evidence === 'unresolved' && this.a.isRequestWrapper(node.id)) continue;
           walkRequest(r, node, depth);
+        } else if (r.kind === 'navigates') {
+          events.push({ t: 'navigate', router: r.target.detail ?? 'router', to: r.note?.startsWith('changes the page to ') && !r.note.includes('computed at runtime') ? r.note.slice(20) : undefined, owner: node.label, node: r.target });
         } else if (r.kind === 'queries' && r.target.kind === 'orm-query') {
           const o = this.a.ormAt(r.target.id);
           if (o)
@@ -346,10 +378,10 @@ export class JourneyBuilder {
       parts.push(`It has ${list(events)} [[event handler|event-handler]]${events.length > 1 ? 's' : ''} at runtime, but none is written in the app's code that TraceNaut reads: library code attached ${events.length > 1 ? 'them' : 'it'}.`);
     }
     if (href) {
-      const router = reg?.id === 'remix';
+      const router = reg?.id === 'remix' ? 'React Router' : reg?.id === 'nextjs' ? 'Next.js' : undefined;
       parts.push(
         router
-          ? `It is a link to ${href}. React Router catches the click and shows the screen for that address without reloading the page; that screen's code then runs.`
+          ? `It is a link to ${href}. ${router} catches the click and shows the page for that address without reloading the whole page; that page's code then runs${router === 'Next.js' ? ` (its [[Server Components|server-component]] run on the server)` : ''}.`
           : `It is a link to ${href}${leafHandlers.includes('onClick') ? ', although a click handler may change what happens' : ''}: the browser goes to that address.`,
       );
     }
@@ -379,7 +411,7 @@ export class JourneyBuilder {
     return {
       question: `What does ${target} do?`,
       headline: libComponent
-        ? `${capital(libComponent.label)} from ${module} handles it${href ? `: it leads to ${href}` : ''}.`
+        ? `${reg ? `${reg.name}'s` : `The ${module} library's`} <${libComponent.label}> handles it${href ? `: it leads to ${href}` : ''}.`
         : href
           ? `It is a link to ${href}.`
           : 'Library code handles it; TraceNaut does not follow library code.',
@@ -396,8 +428,12 @@ export class JourneyBuilder {
     const verb = verbFor(el);
     const ev = eventName(handler.event);
     let summary: string;
-    if (handler.event === 'onSubmit' && handler.via) {
-      summary = `This [[button|html-element]] is inside a [[form|html-form]], so ${verb.ing} it submits the form. Submitting runs the form's [[event handler|event-handler]] for the “submit” event.`;
+    const inside = !['button', 'input'].includes(req.element.tag);
+    const control = inside ? `This ${req.element.tag === 'svg' ? 'icon' : `<${req.element.tag}>`} is inside a submit button of a [[form|html-form]]` : `This [[button|html-element]] is inside a [[form|html-form]]`;
+    if (handler.event === 'action') {
+      summary = `${handler.via ? `${control}, so ${verb.ing} it submits the form. ` : ''}The form has an action: a function React calls with the form's fields when it is submitted, instead of the browser loading a new page.`;
+    } else if (handler.event === 'onSubmit' && handler.via) {
+      summary = `${control}, so ${verb.ing} it submits the form. Submitting runs the form's [[event handler|event-handler]] for the “submit” event.`;
     } else if (handler.via) {
       summary = `The element itself has no handler. The “${ev}” event [[bubbles up|event-bubbling]] to an enclosing ${handler.attachedTo}, which has an [[event handler|event-handler]] for it.`;
     } else {
@@ -436,7 +472,7 @@ export class JourneyBuilder {
       type: 'interaction',
       zone: 'browser',
       title: `You ${verb.present} ${describeTarget(el)}`,
-      subtitle: handler.event === 'onSubmit' && handler.via ? 'submits the form' : `${ev} event`,
+      subtitle: (handler.event === 'onSubmit' || handler.event === 'action') && handler.via ? 'submits the form' : handler.event === 'action' ? 'form action' : `${ev} event`,
       summary,
       evidence: handler.relation.evidence === 'unresolved' ? 'unresolved' : 'static',
       evidenceNote: handler.relation.evidence === 'unresolved' ? handler.relation.note : undefined,
@@ -458,8 +494,16 @@ export class JourneyBuilder {
     // effects) only "also ran". Without marks (older clients) the first call is assumed.
     const byEvent = (root: TraceCall, i: number) => (trace.eventMarks ? !!root.byEvent : i === 0);
     let rendersShown = false;
+    // Requests sent by code TraceNaut does not instrument (a router, a data library) are placed
+    // in time order among the recorded calls.
+    const orphans = [...trace.orphanRequests].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+    const flushOrphans = (before: number) => {
+      while (orphans.length && (orphans[0].at ?? 0) <= before) this.visitRequest(orphans.shift()!, 'code outside the instrumented files', events);
+    };
     trace.calls.forEach((root, i) => {
-      const caused = byEvent(root, i);
+      // Run by the event, or (likely) scheduled by it: the element's own code leads to it.
+      const caused = byEvent(root, i) || !!root.scheduled;
+      flushOrphans(root.at);
       const signature = callSignature(root);
       if (i > 0 && signature === prevSignature) {
         events.push({ t: 'then', repeat: 2 });
@@ -471,10 +515,10 @@ export class JourneyBuilder {
       }
       if (!caused) events.push({ t: 'then' });
       prevSignature = signature;
-      this.visitCall(root, caused ? 'the event' : undefined, events);
+      this.visitCall(root, root.scheduled ? 'code your action scheduled' : caused ? 'the event' : undefined, events, undefined, root.scheduled);
     });
+    flushOrphans(Infinity);
     if (!rendersShown && trace.renders.length) events.push({ t: 'renders', items: trace.renders });
-    for (const r of trace.orphanRequests) this.visitRequest(r, 'code outside the instrumented files', events);
 
     const action = trace.action;
     const el = { tag: action?.tag ?? '?', text: action?.text ?? '', attributes: {} };
@@ -494,6 +538,42 @@ export class JourneyBuilder {
       keys: ['interaction'],
     };
     const steps = this.segment(events, 'observed', interaction);
+    if (trace.unattributed?.length) steps.push({ ...this.unattributedStep(trace.unattributed), id: `s${steps.length}` });
+    for (const ws of trace.sockets ?? [])
+      steps.push({
+        id: `s${steps.length}`,
+        type: 'request',
+        zone: 'network',
+        title: 'Messages over a live connection',
+        subtitle: `${ws.url} · ${ws.sent} sent · ${ws.received} received`,
+        summary: `The page ${ws.opened ? 'opened' : 'already had'} a [[WebSocket|websocket]] connection to ${ws.url}: it stays open, and either side can send a message at any time. During the recording, ${ws.sent} message${ws.sent === 1 ? ' was' : 's were'} sent and ${ws.received} received. TraceNaut counts them but does not read them, and cannot tell which ones your action caused.`,
+        evidence: 'runtime',
+        tech: [fromRegistry('websocket', 'messages were observed on the connection', 'keeps a two-way connection open')].filter((t): t is TechRef => !!t),
+        functions: [],
+        facts: [
+          { label: 'Address', value: ws.url },
+          { label: 'Sent', value: String(ws.sent), evidence: 'runtime' },
+          { label: 'Received', value: String(ws.received), evidence: 'runtime' },
+        ],
+        code: [],
+        keys: [`ws:${ws.url}`],
+        incidental: !ws.sent,
+      });
+    if (trace.notes.some((n) => n.startsWith('Your action loaded a completely new page')))
+      steps.push({
+        id: `s${steps.length}`,
+        type: 'navigation',
+        zone: 'browser',
+        title: 'The browser loaded a new page',
+        subtitle: 'the recording stops here',
+        summary: 'The action replaced the whole page (a full page load, not an in-app change). The old page and its code stopped; TraceNaut finished the recording on the new page, so code that ran on the new page is not part of it.',
+        evidence: 'runtime',
+        tech: [],
+        functions: [],
+        facts: [],
+        code: [],
+        keys: ['nav:full-load'],
+      });
     return {
       question: action ? `What happened when you ${verb.past} ${describeTarget(el)}?` : 'What happened?',
       headline: this.headline(steps, el, 'observed'),
@@ -505,10 +585,11 @@ export class JourneyBuilder {
   }
 
   /** `side` is 'server' for calls the Node agent reported: they ran on the server wherever the file lives. */
-  private visitCall(c: TraceCall, calledBy: string | undefined, events: Evt[], side?: 'server') {
+  private visitCall(c: TraceCall, calledBy: string | undefined, events: Evt[], side?: 'server', scheduled?: boolean) {
     const fn = this.a.fnById(c.node.id);
     events.push({
       t: 'fn',
+      scheduled,
       node: c.node,
       zone: side ?? this.zoneOf(c.node),
       ui: !!c.node.source && this.a.fileHasJsx(c.node.source.file),
@@ -526,18 +607,30 @@ export class JourneyBuilder {
     for (const it of items) {
       if (it.call) this.visitCall(it.call, c.node.label, events, side);
       else if (it.req) this.visitRequest(it.req, c.node.label, events);
-      else if (it.sql) events.push({ t: 'sql', text: it.sql.sql, owner: c.node.label, evidence: 'runtime', rows: it.sql.rows, service: c.node.source?.service, error: it.sql.error });
+      else if (it.sql) events.push(this.observedSql(it.sql, c.node.label, c.node.source?.service));
     }
   }
 
   private visitRequest(r: TraceRequest, owner: string, events: Evt[]) {
     const routeId = r.server?.routeNode?.id;
-    events.push({ t: 'request', method: r.method, path: r.url, evidence: 'runtime', owner, status: r.status, durationMs: r.durationMs, error: r.error, routeId });
+    events.push({ t: 'request', method: r.method, path: r.url, evidence: 'runtime', owner, status: r.status, durationMs: r.durationMs, error: r.error, routeId, fromServer: r.fromServer, toSelf: r.toSelf, serverAction: r.server?.action });
     if (r.server) {
-      events.push({ t: 'route', node: r.server.routeNode, service: r.server.service, middleware: [], evidence: 'runtime', note: r.server.route ? `matched ${r.server.route}` : undefined });
+      const likely = r.server.routeEvidence === 'inferred';
+      events.push({
+        t: 'route',
+        node: r.server.routeNode,
+        service: r.server.service,
+        middleware: [],
+        // The request certainly reached this server; which route took it is only certain when
+        // the framework said so or the route's handler was seen running.
+        evidence: likely ? 'inferred' : 'runtime',
+        note: r.server.route ? `matched ${r.server.route}` : likely ? 'matched by method and address; its handler was not seen running' : undefined,
+        serverAction: r.server.action,
+      });
       const label = r.server.routeNode?.label ?? r.server.route ?? 'the route';
       for (const c of r.server.calls) this.visitCall(c, `the ${label} route`, events, 'server');
-      for (const q of r.server.sql) events.push({ t: 'sql', text: q.sql, owner: 'the server', evidence: 'runtime', rows: q.rows, service: r.server.service });
+      for (const q of r.server.sql) events.push(this.observedSql(q, 'the server', r.server.service));
+      for (const nested of r.server.requests ?? []) this.visitRequest(nested, 'the server', events);
       const route = routeId ? this.a.routeById(routeId) : undefined;
       const resp = route ? this.a.responseDetails(routeId!) : { cookies: [] };
       events.push({ t: 'response', routeId, outcomes: [], cookies: resp.cookies, status: r.status, evidence: 'runtime' });
@@ -547,6 +640,11 @@ export class JourneyBuilder {
     }
   }
 
+  /** A recorded statement. One the driver sent later (from its queue) is only likely this request's. */
+  private observedSql(q: AgentSqlRecord, owner: string, service?: string): SqlEvt {
+    return { t: 'sql', text: q.sql, owner, evidence: q.deferred ? 'inferred' : 'runtime', rows: q.rows, service, error: q.error, protocol: q.protocol };
+  }
+
   // ======================================================================== segmentation
 
   private segment(events: Evt[], mode: 'static' | 'observed', interaction: FlowStep, req?: InspectRequest): FlowStep[] {
@@ -554,6 +652,7 @@ export class JourneyBuilder {
     const accs = new Map<FlowStep, Acc>();
     let cur: FlowStep | undefined;
     let pending: { req: ReqEvt; sql: SqlEvt[] } | undefined;
+    const outer: (typeof pending)[] = [];
     let afterUpdate = false;
     let repeatTarget: FlowStep | undefined;
     const states: string[] = [];
@@ -592,11 +691,13 @@ export class JourneyBuilder {
               merged = true;
             }
           }
+          if (e.scheduled) cur = undefined; // a scheduled call starts its own step
           if (!cur || (!merged && cur.type !== type)) {
             // Code continuing a call that "also ran" also only also ran.
             const inherited = cur ? accs.get(cur)!.afterUpdate : false;
             cur = newFnStep(type, e.zone);
             if (inherited) accs.get(cur)!.afterUpdate = true;
+            if (e.scheduled) accs.get(cur)!.scheduled = true;
           }
           accs.get(cur)!.fns.push(e);
           const next = events.slice(i + 1).find((x) => x.t === 'fn' || x.t === 'request');
@@ -619,6 +720,13 @@ export class JourneyBuilder {
           break;
         case 'request':
           cur = undefined;
+          // A server calling another service: its own statements so far come first, and its
+          // request continues after the other service has answered.
+          if (pending?.sql.length) {
+            push(this.databaseStep(pending.sql, mode));
+            pending.sql = [];
+          }
+          outer.push(pending);
           pending = { req: e, sql: [] };
           push(this.requestStep(e, mode));
           break;
@@ -635,7 +743,11 @@ export class JourneyBuilder {
           if (pending?.sql.length) push(this.databaseStep(pending.sql, mode));
           if (!e.missing || e.status) push(this.responseStep(e, pending?.req, mode));
           else if (e.error && mode === 'observed') push(this.noAnswerStep(e.error));
-          pending = undefined;
+          pending = outer.pop();
+          break;
+        case 'navigate':
+          cur = undefined;
+          push(this.navigationStep(e));
           break;
         case 'renders':
           cur = undefined;
@@ -663,7 +775,12 @@ export class JourneyBuilder {
   private finishFnStep(step: FlowStep, acc: Acc, mode: 'static' | 'observed', steps: FlowStep[]) {
     const fns = acc.fns;
     const files = [...new Set(fns.map((f) => f.node.source?.file).filter((f): f is string => !!f))];
-    step.tech = this.tech.forFiles(files);
+    // Packages these functions call into (e.g. bcrypt.compare, z.object): named by the package.
+    const used = new Set<string>();
+    for (const f of fns)
+      for (const r of this.a.flowRelations(f.node.id))
+        if (r.target.kind === 'external' && r.target.detail) used.add(r.target.detail.startsWith('@') ? r.target.detail.split('/').slice(0, 2).join('/') : r.target.detail.split('/')[0]);
+    step.tech = this.tech.forFiles(files, used);
     step.functions = fns.map<FlowFunction>((f) => ({ node: f.node, calledBy: f.calledBy, params: f.params, evidence: f.evidence, note: f.note, ran: mode === 'observed' ? true : undefined, durationMs: f.durationMs }));
     step.keys = fns.map((f) => f.node.id);
     step.code = fns.slice(0, 4).map((f) => ({ nodeId: f.node.id, label: `${f.node.label}()` }));
@@ -674,7 +791,14 @@ export class JourneyBuilder {
     const langTerm = lang ? `[[${lang.name}|${lang.id}]]` : 'code';
     const parts: string[] = [];
 
-    if (step.type === 'ui-logic') {
+    if (acc.scheduled && mode === 'observed') {
+      step.title = acc.nextIsRequest ? 'A moment later, the code it scheduled sends a request' : 'A moment later, the code it scheduled runs';
+      parts.push(
+        `${fns[0].node.label} ran a little after your action, from a timer rather than directly from the event. TraceNaut links it to your action because the element's code hands this function to a helper that runs it later (for example a debounce, which waits for typing to pause).`,
+      );
+      step.evidence = 'inferred';
+      step.evidenceNote = 'Seen running; linked to your action because the element’s code schedules it.';
+    } else if (step.type === 'ui-logic') {
       const fn0 = this.a.fnById(fns[0].node.id);
       const comp = fn0 ? this.a.ownerComponent(fn0) : undefined;
       const isEffect = fns[0].node.label.startsWith('useEffect callback');
@@ -732,7 +856,18 @@ export class JourneyBuilder {
   private requestStep(e: ReqEvt, mode: 'static' | 'observed'): Omit<FlowStep, 'id'> {
     const method = e.method === '?' ? '' : `[[${e.method}|http-method]] `;
     const parts: string[] = [];
-    if (mode === 'observed') {
+    if (e.toSelf) {
+      parts.push(`The server sent a request to itself: ${e.path}. Frameworks do this to prepare the next page, for example after a redirect; it is part of the same action, not another service.`);
+      if (e.status) parts.push(`It answered ${e.status} ${statusText(e.status)}.`);
+    } else if (e.serverAction) {
+      parts.push(
+        `${e.serverAction}() is a [[Server Action|server-action]]: code that lives on the server but can be called from the page. Calling it makes the framework send an [[HTTP|http]] POST request to the server with the form's fields (or the arguments); no fetch() is written in the app's code.`,
+      );
+    } else if (mode === 'observed' && e.fromServer) {
+      parts.push(`While handling the request, the server's code sent its own [[HTTP|http]] ${method}request to another service: ${e.path}.`);
+      if (e.status) parts.push(`That service answered with [[status|status-code]] ${e.status} ${statusText(e.status)}${e.durationMs !== undefined ? ` after ${Math.round(e.durationMs)} ms` : ''}.`);
+      if (e.error) parts.push(`It failed: ${e.error}.`);
+    } else if (mode === 'observed') {
       parts.push(`The browser sent an [[HTTP|http]] ${method}request to ${e.path}.`);
       if (e.status) parts.push(`The answer came back with [[status|status-code]] ${e.status} ${statusText(e.status)}${e.durationMs !== undefined ? ` after ${Math.round(e.durationMs)} ms` : ''}.`);
       if (e.error) parts.push(`It failed: ${e.error}.`);
@@ -747,7 +882,7 @@ export class JourneyBuilder {
     }
     const sender = e.client === 'axios' ? 'axios' : 'fetch()';
     const last = e.chain?.[e.chain.length - 1] ?? e.via ?? e.owner;
-    const tech: TechRef[] = [this.tech.http(mode === 'observed' ? 'the request was observed leaving the browser' : `${last}() calls ${sender}, which sends HTTP requests`)];
+    const tech: TechRef[] = [this.tech.http(mode === 'observed' ? `the request was observed leaving the ${e.fromServer ? 'server' : 'browser'}` : `${last}() calls ${sender}, which sends HTTP requests`)];
     if (e.format) tech.push(this.tech.json(e.client === 'axios' ? 'axios sends object bodies as JSON' : `${last}() turns the body into text with JSON.stringify`));
     if (mode === 'static') tech.push(e.client === 'axios' ? this.tech.axios(`called in ${e.fetchAt ?? 'the request code'}`) : this.tech.fetch(`called in ${e.fetchAt ?? 'the request code'}`));
     const facts: FlowFact[] = [
@@ -764,7 +899,7 @@ export class JourneyBuilder {
     return {
       type: 'request',
       zone: 'network',
-      title: mode === 'observed' ? 'Sent a request to the server' : 'Sends a request to the server',
+      title: e.toSelf ? 'The server asked itself for the next page' : e.serverAction ? `${mode === 'observed' ? 'Called' : 'Calls'} the Server Action ${e.serverAction}()` : e.fromServer ? 'The server called another service' : mode === 'observed' ? 'Sent a request to the server' : 'Sends a request to the server',
       subtitle: `${e.method === '?' ? '' : `${e.method} `}${e.path}`,
       summary: parts.join(' '),
       evidence: e.evidence,
@@ -775,11 +910,12 @@ export class JourneyBuilder {
       code,
       keys: [e.routeId ? `route:${e.routeId}` : `req:${e.method} ${e.path}`],
       observed: mode === 'observed' ? { status: e.status, durationMs: e.durationMs } : undefined,
+      fromServer: e.fromServer || undefined,
     };
   }
 
   private serverEntryStep(e: RouteEvt, mode: 'static' | 'observed'): Omit<FlowStep, 'id'> {
-    const label = e.node?.label ?? e.note?.replace(/^matched /, '') ?? 'a route';
+    const label = e.node?.label ?? e.note?.replace(/^matched /, '');
     const file = e.node?.source?.file;
     const tech: TechRef[] = [];
     if (e.service) tech.push(this.tech.runtime(e.service));
@@ -796,7 +932,17 @@ export class JourneyBuilder {
     const fw = tech.find((t) => BACKEND_FRAMEWORKS.has(t.id));
     const framework = fw ? `[[${fw.name}|${fw.id}]]` : 'the server framework';
     const parts: string[] = [];
-    if (mode === 'observed') {
+    const page = record?.kind === 'page';
+    if (e.serverAction) {
+      parts.push(`The framework finds the Server Action ${e.serverAction}() from an id it sent with the request, and runs it on the server.`);
+    } else if (page) {
+      parts.push(
+        `${framework}${e.service ? ` (on [[Node.js|nodejs]])` : ''} ${mode === 'observed' ? 'rendered' : 'renders'} the page ${file} on the server for this address: its [[Server Components|server-component]] run there, fetch their data, and the result is sent to the browser.`,
+      );
+      parts.push(`Next.js made this page's address from where the file sits ([[file-based routing|file-routing]]).`);
+    } else if (!label) {
+      parts.push('The request reached the server, but TraceNaut could not tell which route handled it.');
+    } else if (mode === 'observed') {
       parts.push(`${framework}${e.service ? ` (on [[Node.js|nodejs]])` : ''} matched the request to the [[route|route]] ${label} and ran its code.`);
     } else {
       parts.push(`On the server, ${framework}${e.service ? ` (running on [[Node.js|nodejs]])` : ''} has a [[route|route]] for ${label}, so it hands the request to that route's code.`);
@@ -810,7 +956,7 @@ export class JourneyBuilder {
       type: 'server-entry',
       zone: 'server',
       title: mode === 'observed' ? 'The server received it' : 'The server receives it',
-      subtitle: `${label} route`,
+      subtitle: e.serverAction ? `Server Action ${e.serverAction}()` : page ? `${record!.path} page` : label ? `${label} route` : 'route not identified',
       summary: parts.join(' '),
       evidence: e.evidence,
       evidenceNote:
@@ -820,7 +966,7 @@ export class JourneyBuilder {
       tech,
       functions: [],
       facts: [
-        { label: 'Route', value: label, evidence: mode === 'observed' ? 'runtime' : e.evidence },
+        { label: page ? 'Page' : 'Route', value: label ?? 'not identified', evidence: label ? e.evidence : 'unresolved' },
         ...(file ? [{ label: 'Defined in', value: file.split('/').pop()! }] : []),
         ...(e.middleware.length ? [{ label: 'Runs first', value: list(e.middleware.map((m) => m.label)) }] : []),
       ],
@@ -862,10 +1008,17 @@ export class JourneyBuilder {
     };
   }
 
-  private databaseStep(sql: SqlEvt[], mode: 'static' | 'observed'): Omit<FlowStep, 'id'> {
+  private databaseStep(all: SqlEvt[], mode: 'static' | 'observed'): Omit<FlowStep, 'id'> {
+    // Catalog lookups a database library makes for itself (types, schema) are not the app's
+    // own queries; they are mentioned, not listed as what the app reads.
+    const internalSql = all.filter((s) => INTERNAL_SQL.test(s.text));
+    const sql = internalSql.length < all.length ? all.filter((s) => !internalSql.includes(s)) : all;
     const service = sql.find((s) => s.service)?.service;
-    const db = service ? this.tech.database(service) : undefined;
-    const raw = sql.filter((s) => !s.orm);
+    // Observed on the wire, the protocol itself says which database answered.
+    const wireDb = sql.find((s) => s.protocol)?.protocol;
+    const db = wireDb ? { engine: fromRegistry(PROTOCOL_TECH[wireDb], `statements were observed on a ${PROTOCOL_NAME[wireDb]} connection`, 'stores the data and answers the queries')!, driver: undefined } : service ? this.tech.database(service) : undefined;
+    const docs = sql.filter((s) => s.protocol === 'mongodb' || s.protocol === 'redis');
+    const raw = sql.filter((s) => !s.orm && !docs.includes(s));
     const orm = sql.filter((s) => s.orm);
     const files = [...new Set(raw.map((s) => s.node?.source?.file.split('/').pop()).filter(Boolean))];
     const tech: TechRef[] = [];
@@ -873,7 +1026,7 @@ export class JourneyBuilder {
     if (orm.length) tech.push(this.tech.prisma(`model calls such as ${orm[0].text}() in ${orm[0].node?.source?.file.split('/').pop() ?? 'the server code'}`));
     if (db) tech.push(db.engine);
     if (db?.driver) tech.push(db.driver);
-    const access = (s: SqlEvt) => (s.orm ? s.orm.access : opOf(s.text) === 'SELECT' ? 'read' : 'write');
+    const access = (s: SqlEvt) => (s.orm ? s.orm.access : s.protocol === 'mongodb' || s.protocol === 'redis' ? commandAccess(s) : opOf(s.text) === 'SELECT' ? 'read' : 'write');
     const reads = sql.every((s) => access(s) === 'read');
     const writes = sql.every((s) => access(s) === 'write');
     const engine = db ? `[[${db.engine.name}|${db.engine.id}]] ` : '';
@@ -885,6 +1038,17 @@ export class JourneyBuilder {
           ? `The server ran ${raw.length} [[SQL|sql]] statement${raw.length > 1 ? 's' : ''} against the ${engine}database${driver}.`
           : `The server sends ${raw.length} [[SQL|sql]] statement${raw.length > 1 ? 's' : ''} to the ${engine}database${driver}.`,
       );
+    if (docs.length) {
+      const name = docs[0].protocol === 'mongodb' ? '[[MongoDB|mongodb]]' : '[[Redis|redis]]';
+      parts.push(
+        `The server ${mode === 'observed' ? 'sent' : 'sends'} ${docs.length} command${docs.length > 1 ? 's' : ''} to ${name}: ${list([...new Set(docs.map((s) => phraseOf(s)))])}. TraceNaut reads only the command and the collection, never the data.`,
+      );
+    }
+    const late = sql.filter((s) => s.evidence === 'inferred' && !s.orm).length;
+    if (mode === 'observed' && late)
+      parts.push(
+        `${late === sql.length ? 'These were' : `${late} of these were`} sent by the database library a moment after the request's own code had moved on (from its queue), so ${late === 1 ? 'it is' : 'they are'} probably part of this request, but the library could have sent ${late === 1 ? 'it' : 'them'} for another one at the same time.`,
+      );
     if (orm.length) {
       const models = [...new Set(orm.map((s) => s.orm!.model))];
       parts.push(
@@ -894,13 +1058,14 @@ export class JourneyBuilder {
         parts.push(`${list(models)} ${models.length > 1 ? 'are models' : 'is a model'} declared in ${orm[0].orm!.schemaFile}; the generated Prisma client was not available, so the link rests on the names matching.`);
     }
     if (raw.some((s) => s.text.includes('?'))) parts.push('The [[?|sql-placeholder]] marks are filled with real values only when a statement runs; TraceNaut never records those values.');
+    if (internalSql.length && sql !== all) parts.push(`The database library also made ${internalSql.length === 1 ? 'a lookup' : `${internalSql.length} lookups`} of its own (type information from the database's catalog), which ${internalSql.length === 1 ? 'is' : 'are'} not part of the app's code.`);
     return {
       type: 'database',
       zone: 'database',
-      title: reads ? 'Reads from the database' : writes ? 'Writes to the database' : 'Reads and writes data in the database',
+      title: `${reads ? 'Reads from' : writes ? 'Writes to' : 'Reads and writes data in'} ${wireDb === 'redis' ? 'Redis' : 'the database'}`,
       subtitle: sql.map((s) => phraseOf(s)).filter((v, i, a) => a.indexOf(v) === i).join(' · '),
       summary: parts.join(' '),
-      evidence: mode === 'observed' ? 'runtime' : sql.every((s) => s.evidence === 'inferred') ? 'inferred' : 'static',
+      evidence: sql.every((s) => s.evidence === 'inferred') ? 'inferred' : mode === 'observed' ? 'runtime' : 'static',
       tech,
       functions: [],
       facts: sql.map((s) => ({
@@ -909,7 +1074,8 @@ export class JourneyBuilder {
         evidence: s.evidence,
       })),
       code: sql.filter((s) => s.node).slice(0, 4).map((s) => ({ nodeId: s.node!.id, label: `${capital(phraseOf(s))} (in ${s.owner})` })),
-      keys: sql.map((s) => (s.orm ? `orm:${s.text}` : `sql:${s.text.trim().replace(/\s+/g, ' ')}`)),
+      // Recorded SQL has its string literals replaced; static text is normalised the same way to compare.
+      keys: sql.map((s) => (s.orm ? `orm:${s.text}` : `sql:${s.text.replace(/'(?:[^']|'')*'/g, "'…'").replace(/\s+/g, ' ').trim()}`)),
     };
   }
 
@@ -933,6 +1099,10 @@ export class JourneyBuilder {
           evidence: 'static',
         });
       }
+    } else if (e.serverAction) {
+      parts.push(`When ${e.serverAction}() finishes, the server sends its result back to the page${e.redirectTo ? `, and tells the browser to go to ${e.redirectTo}` : ''}.`);
+    } else if (e.routeId && this.a.routeById(e.routeId)?.kind === 'page') {
+      parts.push('The server sends back the page it rendered: HTML when the page is opened, or a [[React Server Components|server-component]] payload when the app moves to it by itself.');
     } else {
       parts.push("TraceNaut found no explicit answer in the route's code.");
     }
@@ -944,7 +1114,9 @@ export class JourneyBuilder {
       type: 'response',
       zone: 'network',
       title: mode === 'observed' ? 'The server answered' : 'The server answers',
-      subtitle: statuses.map((s) => (s === '?' ? 'status set at runtime' : `${s} ${statusText(s)}`)).join(' · ') || undefined,
+      subtitle:
+        statuses.map((s) => (s === '?' ? 'status set at runtime' : `${s} ${statusText(s)}`)).join(' · ') ||
+        (e.serverAction ? (e.redirectTo ? `result, then go to ${e.redirectTo}` : 'the action\'s result') : undefined),
       summary: parts.join(' '),
       evidence: e.evidence,
       tech,
@@ -954,6 +1126,52 @@ export class JourneyBuilder {
       keys: e.routeId ? [`route:${e.routeId}:response`] : req ? [`resp:${req.method} ${req.path}`] : [],
       observed: mode === 'observed' ? { status: e.status } : undefined,
       branches: statuses.length > 1 ? statuses.map((s) => ({ status: s, label: s === '?' ? 'set at runtime' : `${s} ${statusText(s)}` })) : undefined,
+    };
+  }
+
+  /** The code changes the page through a router or the browser's location. */
+  private navigationStep(e: NavEvt): Omit<FlowStep, 'id'> {
+    const next = e.router.startsWith('Next.js');
+    const to = e.to ?? 'an address the code computes when it runs';
+    const parts = [
+      `${e.owner}() changes the page to ${to} using the ${e.router}.`,
+      next
+        ? 'Next.js swaps the page without a full reload: the browser asks the server for the new page, its [[Server Components|server-component]] run there (often reading the database), and the result replaces what is on screen.'
+        : e.router === 'React Router'
+          ? 'React Router shows the screen for that address without reloading the page; that screen\'s components then draw.'
+          : 'The browser loads that address as a new page.',
+    ];
+    if (!e.to) parts.push('Which page it is depends on values only known when the code runs (for example what was typed).');
+    return {
+      type: 'navigation',
+      zone: 'browser',
+      title: next ? 'Changes the page (Next.js router)' : e.router === 'React Router' ? 'Changes the screen (React Router)' : 'Goes to another page',
+      subtitle: e.to ?? 'address computed at runtime',
+      summary: parts.join(' '),
+      evidence: 'static',
+      tech: [next ? fromRegistry('nextjs', `${e.owner}() calls Next.js's router`, 'changes pages without a full reload') : e.router === 'React Router' ? fromRegistry('remix', `${e.owner}() calls React Router's navigate`, 'changes screens without a reload') : undefined].filter((t): t is TechRef => !!t),
+      functions: [],
+      facts: [
+        { label: 'Router', value: e.router },
+        { label: 'Goes to', value: to },
+      ],
+      code: [],
+      keys: [`nav:${e.to ?? '?'}`],
+    };
+  }
+
+  /** Statements a server ran during the recording that could not be linked to any request. */
+  private unattributedStep(items: NonNullable<TraceResult['unattributed']>): Omit<FlowStep, 'id'> {
+    const sql = items.map((i) => this.observedSql(i.sql, 'the server', i.service));
+    const base = this.databaseStep(sql, 'observed');
+    return {
+      ...base,
+      title: 'Also ran in the database during the recording',
+      summary: `TraceNaut saw ${sql.length === 1 ? 'this statement' : `these ${sql.length} statements`} on the server while recording, but cannot tell which request sent ${sql.length === 1 ? 'it' : 'them'}: the database library sent ${sql.length === 1 ? 'it' : 'them'} from its own queue. ${sql.length === 1 ? 'It' : 'They'} may belong to your action, or to something else running at the same time.`,
+      evidence: 'unresolved',
+      evidenceNote: 'Seen running, but not linked to a request.',
+      incidental: true,
+      keys: [],
     };
   }
 
@@ -1009,7 +1227,7 @@ export class JourneyBuilder {
     const first = steps[0];
     if (mode === 'static' && req && handler) {
       const verb = verbFor(req.element);
-      if (handler.event === 'onSubmit' && handler.via) parts.push(`${capital(verb.ing)} ${describeTarget(req.element)} submits its form.`);
+      if ((handler.event === 'onSubmit' || handler.event === 'action') && handler.via) parts.push(`${capital(verb.ing)} ${describeTarget(req.element)} submits its form.`);
       else parts.push(`${capital(verb.ing)} ${describeTarget(req.element)} runs its “${eventName(handler.event)}” handler.`);
     } else if (first) parts.push(`${first.title}.`);
     for (const s of steps) {
@@ -1025,11 +1243,21 @@ export class JourneyBuilder {
 
   /** One sentence that answers the question; the rest of the journey adds detail. */
   private headline(steps: FlowStep[], el: InspectRequest['element'], mode: 'static' | 'observed', handler?: HandlerInfo): string {
-    const requests = steps.filter((s) => s.type === 'request');
+    // Requests the browser sent (not those a server made while handling one).
+    const requests = steps.filter((s) => s.type === 'request' && !s.fromServer && !s.keys[0]?.startsWith('ws:'));
     if (mode === 'observed') {
       const first = requests[0];
       if (!first) return 'Only code in the browser ran; nothing was sent to a server.';
-      const answer = steps.find((s) => s.type === 'response')?.subtitle;
+      // The answer to this request, not to a request the server made while handling it.
+      let depth = 0;
+      let answer: string | undefined;
+      for (const s of steps.slice(steps.indexOf(first))) {
+        if (s.type === 'request') depth++;
+        else if (s.type === 'response' && --depth === 0) {
+          answer = s.subtitle;
+          break;
+        }
+      }
       const more = requests.length > 1 ? `, then ${requests.length - 1} more request${requests.length > 2 ? 's' : ''} followed` : '';
       // The headline names the address without its query string; the step shows it in full.
       const sent = first.subtitle?.replace(/\?.*$/, '');
@@ -1038,13 +1266,22 @@ export class JourneyBuilder {
       // request ran either because of the event, after the redraw (an effect), or just later.
       const before = steps.slice(0, steps.indexOf(first)).reverse().find((s) => s.type === 'ui-logic' || s.type === 'client-logic');
       if (before?.title.startsWith('After the redraw')) return `After the page redrew, it sent ${sent}${tail}`;
+      if (before?.title.startsWith('A moment later')) return `A moment later, the code your action scheduled sent ${sent}${tail}`;
       if (before?.title.startsWith('Also ran')) return `While recording, the browser sent ${sent}${tail} TraceNaut can't tell whether your action caused it.`;
       return `The browser sent ${sent}${tail}`;
     }
     const verb = capital(verbFor(el).ing);
-    const how = handler?.event === 'onSubmit' && handler.via ? 'submits its form' : `runs its “${eventName(handler?.event ?? 'onClick')}” handler`;
+    const how = (handler?.event === 'onSubmit' || handler?.event === 'action') && handler.via ? 'submits its form' : handler?.event === 'action' ? 'runs its form action' : `runs its “${eventName(handler?.event ?? 'onClick')}” handler`;
     const first = requests[0];
-    if (!first) return `${verb} it ${how}; the code stays in the browser.`;
+    if (!first) {
+      const navs = steps.filter((s) => s.type === 'navigation');
+      if (navs.length > 1) return `${verb} it ${how}, which then changes the page; where to depends on what happens when it runs.`;
+      const nav = navs[0];
+      if (nav) return `${verb} it ${how}, which changes the page${nav.subtitle && !nav.subtitle.includes('runtime') ? ` to ${nav.subtitle}` : ''}.`;
+      // Only claim the code stays in the browser when nothing on the way was left unfollowed.
+      if (steps.some((s) => s.type === 'unknown' || s.evidence === 'unresolved')) return `${verb} it ${how}; TraceNaut cannot follow all of what happens next.`;
+      return `${verb} it ${how}; the code stays in the browser.`;
+    }
     const sends = first.facts.find((f) => f.label === 'Sends')?.value;
     const what = sends && !/nothing|not determined/.test(sends) ? `sends ${sends} to the server` : `sends a ${first.subtitle?.split(' ')[0] ?? ''} request to the server`;
     return `${verb} it ${how} and ${what}.`;
@@ -1128,9 +1365,12 @@ const STATUS: Record<number, string> = {
   200: 'OK',
   201: 'Created',
   204: 'No Content',
-  301: 'Moved',
+  301: 'Moved Permanently',
   302: 'Found',
+  303: 'See Other (go to another page)',
   304: 'Not Modified',
+  307: 'Temporary Redirect',
+  308: 'Permanent Redirect',
   400: 'Bad Request',
   401: 'Unauthorized',
   403: 'Forbidden',
@@ -1143,8 +1383,27 @@ function statusText(s: number | '?') {
   return s === '?' ? '' : (STATUS[s] ?? '');
 }
 
+/** Queries database libraries make about the database itself (types, schema), not app data. */
+const INTERNAL_SQL = /\b(pg_catalog|information_schema)\.|^\s*(show\s+\w+|select\s+version\(\))/i;
+
+const PROTOCOL_TECH = { postgres: 'postgresql', mysql: 'mysql', mongodb: 'mongodb', redis: 'redis' } as const;
+const PROTOCOL_NAME = { postgres: 'PostgreSQL', mysql: 'MySQL', mongodb: 'MongoDB', redis: 'Redis' } as const;
+
+/** MongoDB commands and Redis commands that only read. */
+const READ_COMMANDS = /^(find|aggregate|count|countDocuments|distinct|listCollections|listIndexes|GET|MGET|HGET|HGETALL|HMGET|EXISTS|TTL|PTTL|KEYS|SCAN|SMEMBERS|SISMEMBER|ZRANGE|ZRANGEBYSCORE|ZSCORE|LRANGE|LLEN|SCARD|ZCARD|STRLEN|TYPE)$/;
+
+function commandAccess(s: SqlEvt): 'read' | 'write' {
+  return READ_COMMANDS.test(s.text.split(' ')[0]) ? 'read' : 'write';
+}
+
 function phraseOf(s: SqlEvt) {
-  return s.orm ? ormPhrase(s.orm) : opPhrase(s.text);
+  if (s.orm) return ormPhrase(s.orm);
+  if (s.protocol === 'mongodb') {
+    const [cmd, coll = 'data'] = s.text.split(' ');
+    return `${commandAccess(s) === 'read' ? 'read' : /^insert/.test(cmd) ? 'add to' : /^delete/.test(cmd) ? 'remove from' : 'change'} ${coll}`;
+  }
+  if (s.protocol === 'redis') return `${commandAccess(s) === 'read' ? 'read' : 'write'} a key (${s.text})`;
+  return opPhrase(s.text);
 }
 
 function opOf(sql: string) {

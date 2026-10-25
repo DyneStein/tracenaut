@@ -187,6 +187,11 @@ export class Analyzer {
     while (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr)) expr = expr.expression;
     if (isFnLike(expr)) return { node: this.fnNode(expr), evidence: 'static', fn: expr, note: 'defined inline' };
     if (ts.isCallExpression(expr)) {
+      // fn.bind(null, id): the same function, with some arguments fixed in advance.
+      if (ts.isPropertyAccessExpression(expr.expression) && expr.expression.name.text === 'bind') {
+        const inner = this.resolveExpr(project, expr.expression.expression, depth + 1);
+        return { ...inner, note: [`${expr.expression.expression.getText()} with some arguments fixed in advance (.bind)`, inner.note].filter(Boolean).join('; ') };
+      }
       const inner = this.resolveExpr(project, expr.expression, depth + 1);
       return { ...inner, note: `the value returned by calling ${expr.expression.getText()}()` };
     }
@@ -238,6 +243,24 @@ export class Analyzer {
         }
       }
       if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init)) return this.resolveExpr(project, init, depth + 1);
+      if (ts.isCallExpression(init)) {
+        // const f = fn.bind(null, id): the same function.
+        if (ts.isPropertyAccessExpression(init.expression) && init.expression.name.text === 'bind') return this.resolveExpr(project, init, depth + 1);
+        // const f = useDebouncedCallback((term) => …, 300) / debounce(fn) / throttle(fn): a library
+        // wraps the function and decides when it runs. The wrapped function is what runs.
+        const callee = this.resolveExpr(project, init.expression, depth + 1);
+        const wrapped = init.arguments.find((a) => isFnLike(a) || ts.isIdentifier(a));
+        if (callee.node.kind === 'external' && wrapped) {
+          const t = this.resolveExpr(project, wrapped, depth + 1);
+          if (t.fn) {
+            return {
+              ...t,
+              evidence: t.evidence === 'unresolved' ? 'unresolved' : 'inferred',
+              note: `the function handed to ${init.expression.getText().slice(0, 30)}() from ${callee.node.detail}, which decides when it runs (for example after a pause)`,
+            };
+          }
+        }
+      }
       return unresolved(`${name} holds a value computed at runtime (${init.getText().slice(0, 40)})`);
     }
 
@@ -295,6 +318,11 @@ export class Analyzer {
     if (ts.isVariableDeclaration(holder) && holder.initializer) {
       const init = holder.initializer;
       const callee = ts.isCallExpression(init) ? init.expression.getText() : '';
+      // const [state, formAction] = useActionState(createInvoice, …): React calls createInvoice.
+      if (ts.isArrayBindingPattern(pattern) && /use(ActionState|FormState)$/.test(callee) && pattern.elements.indexOf(decl) === 1 && ts.isCallExpression(init) && init.arguments[0]) {
+        const t = this.resolveExpr(project, init.arguments[0], depth + 1);
+        return { ...t, note: [`the action given to ${callee}()`, t.note].filter(Boolean).join('; ') };
+      }
       if (ts.isArrayBindingPattern(pattern) && /use(State|Reducer)$/.test(callee)) {
         const index = pattern.elements.indexOf(decl);
         const r = this.ref(sf, decl);
@@ -442,6 +470,11 @@ export class Analyzer {
     const visit = (n: ts.Node) => {
       if (n !== fn && (ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n))) return;
       if (ts.isCallExpression(n)) this.callRelations(project, checker, fn, n, add);
+      // SQL written as a tagged template: sql`SELECT …` (postgres.js, @vercel/postgres, Drizzle's
+      // sql, Prisma's $queryRaw). The tag sends the text with the ${…} parts as parameters.
+      else if (ts.isTaggedTemplateExpression(n) && isSqlText(n.template)) {
+        add({ kind: 'queries', evidence: 'static', target: this.sqlNode(sf, n.template), note: `SQL written as a ${n.tag.getText().slice(0, 30)}\`…\` template; the \${…} parts are sent as separate values`, site: this.ref(sf, n.template) }, n.getStart(sf));
+      }
       else if (ts.isNewExpression(n)) {
         const t = this.resolveExpr(project, n.expression);
         const thrown = ts.isThrowStatement(n.parent);
@@ -524,6 +557,24 @@ export class Analyzer {
       return;
     }
 
+    // Page navigation through a router or the browser: router.push('/x'), navigate('/x'),
+    // location.assign('/x'). Recognised by the type of what is called, not by its name.
+    const nav = navigationOf(call, checker);
+    if (nav) {
+      add(
+        {
+          kind: 'navigates',
+          evidence: 'static',
+          // One node per destination, so two router.push() calls stay two steps.
+          target: this.externalNode(`${nav.method} ${nav.to ?? '…'}`, nav.router),
+          note: nav.to ? `changes the page to ${nav.to}` : 'changes the page to an address computed at runtime',
+          site,
+        },
+        pos,
+      );
+      return;
+    }
+
     const direct = clientCall(call, fn, checker);
     if (direct) {
       const req = resolveSpec(direct);
@@ -541,6 +592,29 @@ export class Analyzer {
     }
 
     const t = this.resolveExpr(project, callee);
+    // TanStack Query: mutate()/mutateAsync() run the mutationFn given to useMutation().
+    // (When types are unavailable the name alone is not trusted: mutationFnFor must still find
+    // the useMutation({ mutationFn }) call the value comes from.)
+    const tanstack = t.node.kind === 'external' && /tanstack|react-query/.test(t.node.detail ?? '');
+    if ((tanstack || t.node.kind === 'unresolved') && /^(mutate|mutateAsync)$/.test(t.node.label)) {
+      const found = this.mutationFnFor(project, callee);
+      if (found) {
+        const target = this.resolveExpr(project, found.fn);
+        if (target.fn) {
+          add(
+            {
+              kind: 'calls',
+              evidence: target.evidence === 'unresolved' ? 'unresolved' : 'inferred',
+              target: target.node,
+              note: `${t.node.label}() from TanStack Query runs the mutationFn given to useMutation()${found.via ? ` in ${found.via}()` : ''}`,
+              site,
+            },
+            pos,
+          );
+          return;
+        }
+      }
+    }
     if (t.fn) {
       const wrapper = wrapperSpec(t.fn, checker);
       if (wrapper) {
@@ -693,7 +767,12 @@ export class Analyzer {
   }
 
   /** Static routes matching a request; used by the http node and by runtime traces. */
-  matchRoutes(method: string, url: string) {
+  /**
+   * `pages`: also consider pages (Next.js page.tsx). A data request written in code (fetch,
+   * axios) targets API routes, not pages; at runtime a page request (navigation, RSC) does.
+   */
+  matchRoutes(method: string, url: string, opts: { pages?: boolean } = {}) {
+    const candidates = () => this.allRoutes().filter((r) => opts.pages || r.kind !== 'page');
     const params = (r: RouteRecord) => r.path.split('/').filter((s) => s.startsWith(':') || s.includes('*')).length;
     const finish = (xs: { r: RouteRecord; why: string }[]) => {
       xs.sort((x, y) => params(x.r) - params(y.r));
@@ -707,7 +786,7 @@ export class Analyzer {
     if (!url.startsWith(BASE_MARK)) {
       const p = pathOf(url);
       return finish(
-        this.allRoutes()
+        candidates()
           .map((r) => ({ r, why: matchRoute(method, p, r) }))
           .filter((x): x is { r: RouteRecord; why: string } => !!x.why),
       );
@@ -720,7 +799,7 @@ export class Analyzer {
     const tailSegs = tail.split('/').filter(Boolean);
     const n = tailSegs.length;
     const out: { r: RouteRecord; why: string }[] = [];
-    for (const r of this.allRoutes()) {
+    for (const r of candidates()) {
       const segs = r.path.split('/').filter(Boolean);
       if (segs.length < n) continue;
       const head = segs.slice(0, segs.length - n);
@@ -736,6 +815,95 @@ export class Analyzer {
   /** The static route for a runtime-observed `METHOD /full/path` route string. */
   routeByRuntime(service: string, method: string, routePath: string) {
     return this.allRoutes().find((r) => r.service === service && (r.method === method || r.method === 'ALL') && r.path === routePath);
+  }
+
+  /**
+   * A React Server Action: a function in a 'use server' file, or one whose body starts with
+   * 'use server'. Called from the browser, it runs on the server (the framework sends a POST).
+   */
+  isServerAction(id: string): boolean {
+    const fn = this.fnById(id);
+    if (!fn) return false;
+    const directive = (stmts: readonly ts.Statement[]) =>
+      stmts.some((st, i) => i < 3 && ts.isExpressionStatement(st) && ts.isStringLiteral(st.expression) && st.expression.text === 'use server');
+    if (fn.body && ts.isBlock(fn.body) && directive(fn.body.statements)) return true;
+    // File-level directive: only for top-level functions of that file.
+    const sf = fn.getSourceFile();
+    return directive(sf.statements) && !enclosingFn(fn);
+  }
+
+  /**
+   * For mutate()/mutateAsync(): the mutationFn of the useMutation() call its object comes from,
+   * either directly (const m = useMutation({ mutationFn })) or through one of the app's hooks
+   * (const { mutateAsync } = useUpdateQuery(…), which calls useMutation inside).
+   */
+  private mutationFnFor(project: ServiceProject, callee: ts.Expression): { fn: ts.Expression; via?: string } | undefined {
+    const sourceCall = (e: ts.Expression): ts.CallExpression | undefined => {
+      const at = ts.isPropertyAccessExpression(e) ? e.expression : e;
+      if (!ts.isIdentifier(at)) return undefined;
+      const decl = project.checker().getSymbolAtLocation(at)?.valueDeclaration;
+      const holder = decl && ts.isBindingElement(decl) ? decl.parent.parent : decl;
+      const init = holder && ts.isVariableDeclaration(holder) ? holder.initializer : undefined;
+      return init && ts.isCallExpression(init) ? init : undefined;
+    };
+    const optionsFn = (call: ts.CallExpression) => {
+      const opts = call.arguments[0];
+      if (!opts || !ts.isObjectLiteralExpression(opts)) return undefined;
+      const p = opts.properties.find((x) => x.name?.getText() === 'mutationFn');
+      return p && ts.isPropertyAssignment(p) ? p.initializer : p && ts.isShorthandPropertyAssignment(p) ? p.name : undefined;
+    };
+    const call = sourceCall(callee);
+    if (!call) return undefined;
+    if (/(^|\.)useMutation$/.test(call.expression.getText())) {
+      const fn = optionsFn(call);
+      return fn ? { fn } : undefined;
+    }
+    // One of the app's own hooks: look for the useMutation() call inside it.
+    const hook = this.resolveExpr(project, call.expression).fn;
+    if (!hook?.body) return undefined;
+    let inner: ts.CallExpression | undefined;
+    const visit = (n: ts.Node) => {
+      if (inner) return;
+      if (ts.isCallExpression(n) && /(^|\.)useMutation$/.test(n.expression.getText())) inner = n;
+      else ts.forEachChild(n, visit);
+    };
+    visit(hook.body);
+    const fn = inner && optionsFn(inner);
+    return fn ? { fn, via: fnName(hook) } : undefined;
+  }
+
+  /** A function whose request address comes from its own parameters (fetch/axios wrapper). */
+  isRequestWrapper(id: string): boolean {
+    const fn = this.fnById(id);
+    if (!fn) return false;
+    try {
+      return !!wrapperSpec(fn, this.projectFor(this.rel(fn.getSourceFile())).checker());
+    } catch {
+      return false;
+    }
+  }
+
+  /** The literal address a function passes to redirect('/x'), if it does. */
+  redirectTarget(id: string): string | undefined {
+    const fn = this.fnById(id);
+    let found: string | undefined;
+    const visit = (n: ts.Node) => {
+      if (found) return;
+      if (ts.isCallExpression(n) && /(^|\.)redirect$/.test(n.expression.getText()) && n.arguments[0] && ts.isStringLiteral(n.arguments[0])) found = n.arguments[0].text;
+      else ts.forEachChild(n, visit);
+    };
+    if (fn?.body) visit(fn.body);
+    return found;
+  }
+
+  /** Node id of the function that handles a route, when it resolves to one in the project. */
+  handlerNodeId(route: RouteRecord): string | undefined {
+    try {
+      const t = this.resolveExpr(this.project(route.service), route.handler);
+      return t.fn ? this.fnNode(t.fn).id : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private routeRelations(route: RouteRecord): Relation[] {
@@ -1193,17 +1361,38 @@ export class Analyzer {
     if (host?.opening && parentUse?.entry.type === 'component' && host.ownerFn && parentUse.definitionFn === host.ownerFn) primary = 1;
 
     const handlers: HandlerInfo[] = [];
-    const isSubmitControl = isSubmit(req.element);
+    // A click on something inside a submit button (its icon or label) is a click on the button,
+    // so it submits the form too. The nearest button above the clicked element decides.
+    const enclosingButton = resolved.find((l, i) => (i > 0 || req.leaf) && l.entry.type === 'host' && (l.entry.name === 'button' || l.entry.name === 'form'));
+    const buttonType = enclosingButton?.opening ? (staticAttrs(enclosingButton.opening).type ?? '').toLowerCase() : '';
+    const isSubmitControl = isSubmit(req.element) || (enclosingButton?.entry.name === 'button' && (buttonType === '' || buttonType === 'submit'));
     for (let i = 0; i < resolved.length; i++) {
       const lvl = resolved[i];
-      if (lvl.entry.type !== 'host' || !lvl.opening) continue;
-      const staticNames = jsxEventAttrs(lvl.opening).map((a) => a.name.getText());
+      // Plain elements, and usages of library components (<Form onSubmit={…}> from a UI kit):
+      // the app hands the library a function under an event-like name.
+      const libraryComponent = lvl.entry.type === 'component' && lvl.level.definition?.kind === 'external';
+      if ((lvl.entry.type !== 'host' && !libraryComponent) || !lvl.opening) continue;
+      // Event handlers, plus React form actions: <form action={fn}> / <button formAction={fn}>
+      // (a string value is an ordinary URL, not code).
+      const actionAttrs = ['action', 'formAction'].filter((n) => {
+        const a = jsxAttr(lvl.opening!, n);
+        return a?.initializer && ts.isJsxExpression(a.initializer) && !!a.initializer.expression;
+      });
+      const staticNames = [...jsxEventAttrs(lvl.opening).map((a) => a.name.getText()), ...actionAttrs];
       const runtimeNames = lvl.entry.runtimeHandlers;
       const names = new Set([...staticNames, ...(runtimeNames ?? [])]);
       for (const event of names) {
-        if (i > 0 && !BUBBLING.has(event) && !(event === 'onSubmit' && isSubmitControl)) continue;
+        if (i > 0 && !BUBBLING.has(event) && !((event === 'onSubmit' || event === 'action') && isSubmitControl)) continue;
         const runtimeAttached = runtimeNames ? runtimeNames.includes(event) : false;
-        const info = this.resolveHandler(resolved, i, event);
+        const info: { relation: Relation; hops: string[] } = this.resolveHandler(resolved, i, event);
+        if (libraryComponent) {
+          // What the library does with the function is not read; its name is the evidence.
+          info.relation = {
+            ...info.relation,
+            evidence: info.relation.evidence === 'unresolved' ? 'unresolved' : 'inferred',
+            note: [`passed to ${lvl.level.definition!.detail}'s <${lvl.entry.name}> as ${event}; TraceNaut assumes the library calls it ${event === 'onSubmit' ? 'when the form is submitted' : `on “${event.replace(/^on/, '').toLowerCase()}”`}, as the name says`, info.relation.note].filter(Boolean).join('; '),
+          };
+        }
         handlers.push({
           event,
           attachedAt: lvl.level.source!,
@@ -1545,6 +1734,42 @@ function describeKind(kind: string) {
   return { component: 'React component', hook: 'React hook', method: 'Method', function: 'Function' }[kind] ?? kind;
 }
 
+/** A call that changes the page: Next.js router, React Router's navigate, window.location. */
+function navigationOf(call: ts.CallExpression, checker: ts.TypeChecker): { router: string; method: string; to?: string } | undefined {
+  const callee = call.expression;
+  const target = call.arguments[0] ? navTarget(call.arguments[0]) : undefined;
+  const typeName = (e: ts.Expression) => checker.typeToString(checker.getTypeAtLocation(e));
+  // Names first (cheap); types only for calls that could be navigation.
+  if (ts.isPropertyAccessExpression(callee)) {
+    const method = callee.name.text;
+    if (!/^(push|replace|back|forward|refresh|assign)$/.test(method)) return undefined;
+    const owner = typeName(callee.expression);
+    if (/^(push|replace|back|forward|refresh)$/.test(method) && /\b(AppRouterInstance|NextRouter)\b/.test(owner)) return { router: 'Next.js router', method, to: target };
+    if (/^(assign|replace)$/.test(method) && /^(window\.)?location$/.test(callee.expression.getText())) return { router: 'browser location', method, to: target };
+    return undefined;
+  }
+  if (ts.isIdentifier(callee)) {
+    const sym = checker.getSymbolAtLocation(callee);
+    const decl = sym?.valueDeclaration;
+    // const navigate = useNavigate() (React Router)
+    if (decl && ts.isVariableDeclaration(decl) && decl.initializer && ts.isCallExpression(decl.initializer) && /useNavigate$/.test(decl.initializer.expression.getText())) {
+      if (/\bNavigateFunction\b/.test(typeName(callee))) return { router: 'React Router', method: 'navigate', to: target };
+    }
+    // const { push, replace } = useRouter() (Next.js): the destructured methods keep their type.
+    if (decl && ts.isBindingElement(decl) && ts.isVariableDeclaration(decl.parent.parent) && decl.parent.parent.initializer) {
+      const method = (decl.propertyName ?? decl.name).getText();
+      if (/^(push|replace|back|forward|refresh)$/.test(method) && /\b(AppRouterInstance|NextRouter)\b/.test(typeName(decl.parent.parent.initializer))) return { router: 'Next.js router', method, to: target };
+    }
+  }
+  return undefined;
+}
+
+function navTarget(e: ts.Expression): string {
+  if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
+  if (ts.isTemplateExpression(e)) return e.head.text + e.templateSpans.map((s) => `{${s.expression.getText().slice(0, 20)}}${s.literal.text}`).join('');
+  return `{${e.getText().slice(0, 30)}}`;
+}
+
 function isSubmit(el: InspectRequest['element']) {
   const type = (el.attributes.type ?? '').toLowerCase();
   if (el.tag === 'button') return type === '' || type === 'submit';
@@ -1560,7 +1785,8 @@ export function sqlLabel(sql: string) {
 
 export function sqlTables(sql: string) {
   const out = new Set<string>();
-  const re = /\b(?:from|into|update|join|table(?:\s+if\s+not\s+exists)?)\s+["`]?([A-Za-z_][\w.]*)/gi;
+  // Optionally schema-qualified and quoted: users, public.users, "public"."users".
+  const re = /\b(?:from|into|update|join|table(?:\s+if\s+not\s+exists)?)\s+(?:["`]?[A-Za-z_]\w*["`]?\.)?["`]?([A-Za-z_]\w*)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(sql))) out.add(m[1]);
   return [...out];

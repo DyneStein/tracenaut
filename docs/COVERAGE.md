@@ -7,57 +7,75 @@ What TraceNaut can do, technology by technology, and how it was checked on real 
 | Icon | TraceNaut can show it (official logo tile or TraceNaut icon). |
 | Detect | TraceNaut can tell, from repository evidence, that a project uses it ("Built with" on the home view). |
 | Static | TraceNaut analyses its code structure (calls, routes, requests, queries). |
-| Runtime | TraceNaut observes it while the app runs ("Watch it happen"). |
+| Runtime | TraceNaut observes it while the app runs ("Watch it happen"), validated on a running app. |
 | Trace | TraceNaut links it across places, e.g. request → route → SQL. |
 | Explain | A plain-language explanation is available. |
 
-## What each analysed technology means in practice
+## How TraceNaut avoids needing one adapter per technology
 
-| Area | Static | Runtime |
+Most of what TraceNaut observes is read at boundaries every stack has to pass through, so it works for libraries it has never heard of:
+
+| Boundary | What it gives | Works for |
 |---|---|---|
-| React + Vite | Element → JSX (exact), component chain, handlers incl. bubbling, form submission, props and spreads; elements drawn by library components are attributed to the library | Function calls of the app's own code, re-renders, effects; calls are marked as caused only if they started during the event's dispatch |
-| HTTP clients | `fetch`, `axios` (methods, config calls, `axios.create({ baseURL })`); wrappers up to 5 levels deep; URL-builder helpers inlined; unknown runtime base addresses assumed explicitly (inferred) | All `fetch`/XHR requests during a recording, with status, duration, failures; sensitive query values redacted |
-| Express | Routes, mount prefixes, sub-apps, path-scoped middleware in order, responses (`res.status().json()`, cookies) | Matched route (`req.route`), server calls, SQL |
-| Fastify, Hono, koa-router | Routes incl. plugins/sub-apps/prefixes, middleware where declared, responses (`reply.code().send()`, `c.json()`, `ctx.status/body`) | Server calls and SQL through the Node agent (route identified by method + path); not exercised on a real app yet |
-| Next.js | `app/**/route.ts` (groups, `[param]`, `[...rest]`) and `pages/api`; responses via `Response.json` / `NextResponse` (one helper level) | Not supported yet (no instrumentation plugin for Next's bundler) |
-| SQL | SQL text passed to database APIs or helpers, statements prepared elsewhere, template SQL with runtime parts | `node:sqlite`, `better-sqlite3`, `pg`: statement text, rows, errors; parameter values never read |
-| Prisma | `x.<model>.<op>()` matched to models in `.prisma` schemas; inferred without the generated client | Not observed as Prisma; the SQL it generates is seen only when it goes through an observed driver |
+| JSX and functions, instrumented at build time (Babel, as a Vite plugin or a Next.js loader) | element → source, which functions ran, in what order | any React code compiled by Vite, Turbopack or webpack |
+| DOM events and their dispatch phase | which calls your action ran, and which only happened during the recording | any UI library |
+| `fetch`/XHR/WebSocket in the page | requests, answers, live-connection message counts | any HTTP or WebSocket client |
+| Node's HTTP server and client (`diagnostics_channel`) | requests reaching a server, requests it sends on (incl. to another local service) | Express, Fastify, Hono, Koa, Next.js, plain `http`, … |
+| Database wire protocols on sockets | statement text (literals hidden), row counts, errors | PostgreSQL (any driver: pg, postgres.js, Drizzle, Knex, Prisma via a JS adapter, …), MySQL, MongoDB, Redis |
+| Installed packages' own `package.json` | name and description of any library | every npm package |
 
-`pg` runtime capture is tested against a stand-in module with pg's API shape (`tests/unit/agent-drivers.test.mjs`), not against a PostgreSQL server. `better-sqlite3` capture is tested the same way and was also observed on a real app (below).
+Technology knowledge (the registry, curated explanations, framework route syntax, a few library contracts such as TanStack Query's `mutationFn`) is enrichment on top. When it is missing, journeys still show what ran and what was sent; the explanation is then the library's own description.
 
-## Validation on public repositories
+## Real applications
 
-Both repositories were cloned into an isolated scratch directory; no install scripts were run (`npm install --ignore-scripts`, then one native rebuild for better-sqlite3). The static reports are produced by `node scripts/analyze-repo.mjs <repo> --json <out>` and stored in `docs/perf/`.
+| Application | Revision | Stack | How it ran |
+|---|---|---|---|
+| [Claude-Code-Agent-Monitor](https://github.com/hoangsonww/Claude-Code-Agent-Monitor) (MIT) | `3cb22ae4` | React + Vite, Express, better-sqlite3, WebSocket | sandboxed HOME and data dirs; Vite plugin + agent |
+| [next-learn dashboard](https://github.com/vercel/next-learn/tree/main/dashboard/final-example) (MIT) | `bb255844` | Next.js 15.5 (Turbopack), Server Components, Server Actions, postgres.js, PostgreSQL | `@tracenaut/next` + agent; PGlite seeded with the app's own data |
+| [umami](https://github.com/umami-software/umami) (MIT) | `559e3c60` | Next.js 16.4 (Turbopack), Prisma 7 + `@prisma/adapter-pg`, TanStack Query, a UI kit, CSP headers; pnpm workspace | `@tracenaut/next` + agent; PGlite with the repo's 27 migrations |
+| Validation apps in `tests/integration` (own code) | — | Fastify 5, Hono 4, Koa 3, pg, postgres.js, Drizzle, a second local service | `node tests/integration/run-*.mjs` |
 
-| | [Claude-Code-Agent-Monitor](https://github.com/hoangsonww/Claude-Code-Agent-Monitor) @ `3cb22ae4` (MIT) | [umami](https://github.com/umami-software/umami) @ `559e3c60` (MIT) |
-|---|---|---|
-| Stack | React + Vite client, Express (CommonJS), better-sqlite3, ws | Next.js App Router, Prisma, raw SQL, React Query |
-| Files read | 1,004 | 2,009 |
-| Server routes found | 128 | 203 (Next.js route files) |
-| Request call sites | 111 | 135 |
-| Requests matched to a route | 110 / 111 (before this work: 47 / 109) | 76 / 135 |
-| Methods resolved | all 111 (before: 103 of 109 reported as GET, most wrongly) | 134 of 135 |
-| Route handlers reaching the database | 76 / 128 (before: 33) | 198 / 203 (Prisma + raw SQL) |
-| Full analysis time / memory | 4.3 s / 673 MB (before: 47 s) | 5.2 s / 411 MB |
-| Runtime | Ran in a sandbox (separate HOME, data dir, ports); three interactions recorded | Not run (needs PostgreSQL) |
+Test-environment adaptations (scratch copies only): the dashboard's `ssl: 'require'` was made configurable because PGlite's TCP server has no TLS; its seed route was replaced by a single-connection seed of the same placeholder data (PGlite serialises connections and the route opens several inside a transaction); each app's Next.js/Vite config was wrapped with the TraceNaut plugin.
 
-Unmatched requests are left unmatched on purpose: in umami they are the generic wrappers themselves, requests to static files in `public/` (translation files), and paths with a runtime segment where a fixed one would be needed (`/websites/{id}/{feature}`), which could fit several routes.
+### Interactions traced end to end
 
-### Runtime on Claude-Code-Agent-Monitor
+| App | Interaction | Static journey | Recording |
+|---|---|---|---|
+| dashboard | sidebar link (Next `<Link>`) | Next.js's `<Link>` handles it, leads to `/dashboard/invoices` | RSC request → page `/dashboard/invoices` → its Server Components → SQL reads (likely) → redraw |
+| dashboard | "Create Invoice" form (Server Action) | submit → Server Action `createInvoice()` → INSERT invoices → result, redirect | same, plus the server asking itself for the next page, 303 answer; the invoice really appears |
+| dashboard | Delete icon inside a submit button | submit → Server Action `deleteInvoice()` (via `.bind`) → DELETE invoices | — |
+| dashboard | search box (debounced) | change handler → debounced function (likely) → Next router changes the page | "a moment later, the code it scheduled" → RSC request → page → SQL → redraw |
+| umami | login form (library `<Form onSubmit>`, TanStack `useMutation`) | handleSubmit (likely) → mutationFn → POST (address set at runtime) → two possible navigations | POST /api/auth/login → route → Prisma's SQL via pg (two_factor_auth, team, user) → full page load, recording finished on the new page |
+| agent monitor | onboarding button, Refresh, React Router link | requests and routes for each; NavLink reported as React Router | 10 predicted links confirmed for Refresh; better-sqlite3 statements |
+| integration apps | Fastify plugin route, Hono sub-app, Koa nested router | routes with prefixes and middleware | each route confirmed by its handler running, with its SQL |
+| integration apps | pg Pool / postgres.js / Drizzle, concurrent and overlapping requests, SQL error, server → second service | — | every statement under the right request; queued ones marked likely; background job never linked |
 
-The app ran with the TraceNaut Vite plugin and the Node agent, with `HOME`, `CLAUDE_HOME`, `CODEX_HOME`, `XDG_CONFIG_HOME` and the app's data paths pointed at a scratch folder. The app installs Claude Code hooks at start-up; they were written to the scratch folder and the real `~/.claude/settings.json` was left unchanged.
+### Correctness of discovered links (manually verified samples)
 
-| Interaction | Static journey | Recording |
-|---|---|---|
-| Onboarding "Continue to dashboard" | click → `continueFromProviderChoice` → `GET /api/settings/info` → Express route behind `hostGuard` → SQL → 403/401/200 | Confirmed; 6 further requests seen running |
-| Dashboard "Refresh" | `GET /api/stats`, `/api/agents` (×2), `/api/events`, … each matched to its route with SQL | 10 predicted links confirmed, better-sqlite3 statements captured with row counts |
-| Sidebar "Sessions" (React Router `<NavLink>`) | "NavLink from react-router handles it: it leads to /sessions" | Page redraw, effects and the requests they send; unrelated animation-frame code folded as "also ran" |
+Static request → server-route links, deterministic samples checked by reading the client call and the route definition:
 
-Issues found this way and fixed: server functions outside the configured server folder were shown in the browser zone of recordings; an element drawn by a router library was reported as doing nothing; an animation-frame callback was presented as the first thing the click ran; the headline implied the click itself sent a request that a later effect sent.
+| Repository | Links found | Sample | Correct | Wrong |
+|---|---|---|---|---|
+| Agent monitor (Express) | 116 | 15 | 15 | 0 |
+| umami (Next.js) — before fix | 96 | 15 | 11 | 4 (requests matched to *pages*) |
+| umami (Next.js) — after fix | 76 | 20 | 20 | 0 |
+
+The umami false positives were found by this sampling and fixed: data requests written in code are no longer matched to Next.js pages (pages are only matched for runtime navigation requests). Runtime journeys above were each compared with the source; incorrect runtime links found during validation (an animation frame presented as caused by a click, server code shown in the browser, a request credited to the click instead of a later effect, a link drawn as two lanes, a "page" request read as "nothing happens") were fixed and have regression tests.
+
+### Static coverage numbers
+
+Produced by `node scripts/analyze-repo.mjs <repo> --json <out>`, stored in `docs/perf/`:
+
+| | Agent monitor | umami | dashboard |
+|---|---|---|---|
+| Routes (incl. Next.js pages) | 128 | 263 | 9 |
+| Request call sites / linked to a route | 111 / 110 | 135 / 76 | 0 (the app uses Server Actions and Server Components, not fetch) |
+| Route handlers reaching the database | 76 / 128 | 202 / 263 | 6 / 9 |
+| Full analysis | 4.4 s, 681 MB | 9.5 s, 707 MB | 1.2 s |
 
 ## Technology matrix
 
-Generated by `node scripts/coverage.mjs`.
+Generated by `node scripts/coverage.mjs`. MySQL, MongoDB and Redis statement capture is implemented and tested on hand-built protocol messages, but not yet against real servers, so they are not marked Runtime.
 
 | Technology | Kind | Icon | Detect | Static | Runtime | Trace | Explain |
 |---|---|:-:|:-:|:-:|:-:|:-:|:-:|
@@ -91,7 +109,7 @@ Generated by `node scripts/coverage.mjs`.
 | WebAssembly | language | ✓ | ✓ | · | · | · | ✓ |
 | **Frontend** | |  |  |  |  |  |  |
 | React | library | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Next.js | framework | ✓ | ✓ | ✓ | · | ✓ | ✓ |
+| Next.js | framework | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Vue ¹ | framework | ✓ | ✓ | · | · | · | ✓ |
 | Nuxt | framework | ✓ | ✓ | · | · | · | ✓ |
 | Angular | framework | ✓ | ✓ | · | · | · | ✓ |
@@ -105,7 +123,7 @@ Generated by `node scripts/coverage.mjs`.
 | MUI | library | ✓ | ✓ | · | · | · | ✓ |
 | Redux | library | ✓ | ✓ | · | · | · | ✓ |
 | axios ¹ | library | ✓ | ✓ | ✓ | · | ✓ | ✓ |
-| TanStack Query | library | ✓ | ✓ | · | · | · | ✓ |
+| TanStack Query | library | ✓ | ✓ | ✓ | · | ✓ | ✓ |
 | jQuery | library | ✓ | ✓ | · | · | · | ✓ |
 | Three.js | library | ✓ | ✓ | · | · | · | ✓ |
 | D3 ¹ | library | ✓ | ✓ | · | · | · | ✓ |
@@ -115,9 +133,9 @@ Generated by `node scripts/coverage.mjs`.
 | Bun | runtime | ✓ | ✓ | · | · | · | ✓ |
 | Deno | runtime | ✓ | ✓ | · | · | · | ✓ |
 | Express | framework | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Fastify | framework | ✓ | ✓ | ✓ | · | ✓ | ✓ |
-| Koa | framework | ✓ | ✓ | ✓ | · | ✓ | ✓ |
-| Hono | framework | ✓ | ✓ | ✓ | · | ✓ | ✓ |
+| Fastify | framework | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Koa | framework | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Hono | framework | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | NestJS | framework | ✓ | ✓ | · | · | · | ✓ |
 | tRPC | library | ✓ | ✓ | · | · | · | ✓ |
 | Apollo GraphQL | library | ✓ | ✓ | · | · | · | ✓ |
@@ -141,8 +159,8 @@ Generated by `node scripts/coverage.mjs`.
 | Elasticsearch | database | ✓ | ✓ | · | · | · | ✓ |
 | Apache Cassandra | database | ✓ | ✓ | · | · | · | ✓ |
 | Neo4j | database | ✓ | ✓ | · | · | · | ✓ |
-| Prisma | library | ✓ | ✓ | ✓ | · | ✓ | ✓ |
-| Drizzle ORM | library | ✓ | ✓ | · | · | · | ✓ |
+| Prisma | library | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Drizzle ORM | library | ✓ | ✓ | · | ✓ | · | ✓ |
 | Sequelize | library | ✓ | ✓ | · | · | · | ✓ |
 | Mongoose | library | ✓ | ✓ | ✓ | · | · | ✓ |
 | TypeORM | library | ✓ | ✓ | · | · | · | ✓ |
@@ -189,7 +207,7 @@ Generated by `node scripts/coverage.mjs`.
 | bcrypt ¹ | library | ✓ | ✓ | · | · | · | ✓ |
 | **Messaging & real time** | |  |  |  |  |  |  |
 | Socket.IO | library | ✓ | ✓ | · | · | · | ✓ |
-| WebSocket ¹ | protocol | ✓ | ✓ | · | · | · | ✓ |
+| WebSocket ¹ | protocol | ✓ | ✓ | · | ✓ | · | ✓ |
 | RabbitMQ | service | ✓ | ✓ | · | · | · | ✓ |
 | Apache Kafka | service | ✓ | ✓ | · | · | · | ✓ |
 | BullMQ ¹ | library | ✓ | ✓ | · | · | · | ✓ |
@@ -200,6 +218,6 @@ Generated by `node scripts/coverage.mjs`.
 | Cypress | tool | ✓ | ✓ | · | · | · | ✓ |
 | Storybook | tool | ✓ | ✓ | · | · | · | ✓ |
 
-129 technologies · Icon 129 · Detect 129 · Static 17 · Runtime 10 · Trace 14 · Explain 129
+129 technologies · Icon 129 · Detect 129 · Static 18 · Runtime 17 · Trace 15 · Explain 129
 
 ¹ No official logo is used (licence or availability); TraceNaut's conceptual icon is shown instead.

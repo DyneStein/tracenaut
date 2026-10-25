@@ -25,6 +25,8 @@ export interface RouteRecord {
   col: number;
   receiver: string;
   framework: Lib | 'next';
+  /** A page (Next.js page.tsx) rather than an API route: a GET to it renders the page. */
+  kind?: 'page';
   /** How the route is declared, as shown to the user: `router.get('/x')`, `export function GET` in app/x/route.ts. */
   declared: string;
   /** The registration: the `.get()` call, or the exported handler. */

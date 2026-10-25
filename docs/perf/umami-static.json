@@ -4,12 +4,12 @@
     "umami:browser:"
   ],
   "timings": {
-    "routesMs": 966,
-    "requestsMs": 4153,
-    "totalMs": 5209
+    "routesMs": 1816,
+    "requestsMs": 7643,
+    "totalMs": 9544
   },
   "routes": {
-    "count": 203,
+    "count": 263,
     "unmounted": 0,
     "withMiddleware": 0,
     "sample": [
@@ -46,10 +46,10 @@
       "DELETE {path}?… [unresolved] → 0 route(s)  (src/lib/fetch.ts:48)",
       "POST {path} [unresolved] → 0 route(s)  (src/lib/fetch.ts:52)",
       "PUT {path} [unresolved] → 0 route(s)  (src/lib/fetch.ts:56)",
-      "GET {base}{url}?… [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:41)",
-      "POST {base}{url} [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:48)",
-      "PUT {base}{url} [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:55)",
-      "DELETE {base}{url}?… [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:62)"
+      "GET {base URL}{url}?… [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:41)",
+      "POST {base URL}{url} [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:48)",
+      "PUT {base URL}{url} [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:55)",
+      "DELETE {base URL}{url}?… [unresolved] → 0 route(s)  (src/components/hooks/useApi.ts:62)"
     ],
     "unmatchedSample": [
       "GET {input} [unresolved]  (packages/api-client/src/http.ts:230)",
@@ -60,12 +60,12 @@
       "DELETE {path}?… [unresolved]  (src/lib/fetch.ts:48)",
       "POST {path} [unresolved]  (src/lib/fetch.ts:52)",
       "PUT {path} [unresolved]  (src/lib/fetch.ts:56)",
-      "GET {base}{url}?… [unresolved]  (src/components/hooks/useApi.ts:41)",
-      "POST {base}{url} [unresolved]  (src/components/hooks/useApi.ts:48)"
+      "GET {base URL}{url}?… [unresolved]  (src/components/hooks/useApi.ts:41)",
+      "POST {base URL}{url} [unresolved]  (src/components/hooks/useApi.ts:48)"
     ]
   },
   "sql": {
-    "routeHandlersReachingSql": "198 / 203"
+    "routeHandlersReachingSql": "202 / 263"
   },
-  "memoryMB": 411
+  "memoryMB": 707
 }

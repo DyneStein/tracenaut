@@ -4,6 +4,7 @@ import path from 'node:path';
 import { IGNORED_DIRS, type ServiceConfig, type Workspace, toAbs, toRel } from '../workspace.js';
 
 const SOURCE_EXT = /\.(m|c)?[jt]sx?$/;
+const GENERATED_OUTPUT = /[\\/](\.next|\.nuxt|\.svelte-kit|\.output|\.vercel|\.turbo|\.cache)[\\/]/;
 const MAX_FILES = 8000;
 
 /**
@@ -23,21 +24,32 @@ export class ServiceProject {
     const root = toAbs(ws, service.root);
     const parsed = readConfig(root);
     this.options = { ...parsed.options, noEmit: true, allowJs: true, checkJs: false };
-    this.fileNames = parsed.fileNames.length ? parsed.fileNames : listSources(root);
+    // Framework output (.next/types…) is regenerated constantly by a running dev server and is
+    // never imported by the app; leaving it out keeps the program stable while the app runs.
+    this.fileNames = (parsed.fileNames.length ? parsed.fileNames : listSources(root)).filter((f) => !GENERATED_OUTPUT.test(f));
 
     const host: ts.LanguageServiceHost = {
       getCompilationSettings: () => this.options,
       getScriptFileNames: () => this.fileNames,
-      getScriptVersion: (f) => {
-        try {
-          return String(statSync(f).mtimeMs);
-        } catch {
-          return '0';
-        }
+      // A file's version is its modification time, checked at most once a second; its text is
+      // read again only when that version changes. Dev servers rewrite generated files (for
+      // example Next.js's .next/types) constantly, which otherwise makes every language-service
+      // query re-read the whole project.
+      getScriptVersion: (f) => this.version(f),
+      // Changes only when a file's version changed, so the language service reuses its program
+      // between queries instead of re-checking (and often rebuilding) it every time.
+      getProjectVersion: () => {
+        for (const f of this.fileNames) this.version(f);
+        return String(this.changes);
       },
       getScriptSnapshot: (f) => {
+        const version = this.version(f);
+        const hit = this.snapshots.get(f);
+        if (hit && hit.version === version) return hit.snapshot;
         if (!existsSync(f)) return undefined;
-        return ts.ScriptSnapshot.fromString(readFileSync(f, 'utf8'));
+        const snapshot = ts.ScriptSnapshot.fromString(readFileSync(f, 'utf8'));
+        this.snapshots.set(f, { version, snapshot });
+        return snapshot;
       },
       getCurrentDirectory: () => root,
       getDefaultLibFileName: (o) => ts.getDefaultLibFilePath(o),
@@ -51,6 +63,25 @@ export class ServiceProject {
   }
 
   private cached?: { program: ts.Program; at: number };
+  private versions = new Map<string, { version: string; at: number }>();
+  private snapshots = new Map<string, { version: string; snapshot: ts.IScriptSnapshot }>();
+
+  private changes = 0;
+
+  private version(f: string) {
+    const now = Date.now();
+    const hit = this.versions.get(f);
+    if (hit && now - hit.at < 1000) return hit.version;
+    let version = '0';
+    try {
+      version = String(statSync(f).mtimeMs);
+    } catch {
+      // missing file
+    }
+    if (hit && hit.version !== version) this.changes++;
+    this.versions.set(f, { version, at: now });
+    return version;
+  }
 
   /**
    * The current program. Asking the language service re-checks every file's modification

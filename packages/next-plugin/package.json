@@ -1,0 +1,13 @@
+{
+  "name": "@tracenaut/next",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.cjs",
+  "types": "src/index.ts",
+  "exports": { ".": "./dist/index.cjs", "./loader": "./dist/loader.cjs" },
+  "dependencies": {
+    "@babel/core": "7.29.7",
+    "@tracenaut/instrument": "0.1.0"
+  },
+  "peerDependencies": { "next": ">=14" }
+}

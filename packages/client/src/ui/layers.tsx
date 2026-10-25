@@ -31,7 +31,22 @@ interface Lane {
 function lanesOf(steps: FlowStep[]): Lane[] {
   const lanes: Lane[] = [];
   let cur: Lane | undefined;
+  let nested = 0;
   for (const s of steps) {
+    if (s.keys[0]?.startsWith('ws:')) continue; // a live connection, not a request/answer pair
+    // A server's own requests (to another service or itself) belong to the current lane.
+    if (s.type === 'request' && s.fromServer) {
+      nested++;
+      continue;
+    }
+    if (nested && s.type === 'response') {
+      nested--;
+      continue;
+    }
+    if (nested) {
+      if (s.type === 'database' && cur) cur.database.push(s);
+      continue;
+    }
     if (s.type === 'request') {
       cur = { request: s, crossing: s, database: [] };
       lanes.push(cur);

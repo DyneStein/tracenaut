@@ -1,43 +1,43 @@
 {
   "bundle": {
-    "rawKB": 137.8,
-    "gzipKB": 41.8
+    "rawKB": 144,
+    "gzipKB": 43.7
   },
   "daemon": {
-    "coldStartToAnalysisReadyMs": 912,
-    "rssMB": 248
+    "coldStartToAnalysisReadyMs": 1042,
+    "rssMB": 252
   },
   "journeyApi": {
-    "firstMs": 148.3,
+    "firstMs": 181.6,
     "medianMs": 2.9
   },
   "panel": {
-    "firstOpenMs": 134,
-    "medianOpenMs": 91,
+    "firstOpenMs": 151,
+    "medianOpenMs": 90,
     "longTasksOver50ms": 0
   },
   "repeatedInspections30": {
     "before": {
-      "heapMB": 6.11,
-      "nodes": 839,
-      "listeners": 270
+      "heapMB": 6.09,
+      "nodes": 831,
+      "listeners": 272
     },
     "after": {
-      "heapMB": 7.62,
+      "heapMB": 7.59,
       "nodes": 833,
-      "listeners": 271
+      "listeners": 273
     },
-    "heapGrowthMB": 1.51,
+    "heapGrowthMB": 1.5,
     "listenerGrowth": 1
   },
   "repeatedInspections90": {
     "after": {
-      "heapMB": 8.25,
+      "heapMB": 8.24,
       "nodes": 833,
-      "listeners": 271
+      "listeners": 273
     },
-    "heapGrowthMB": 2.14,
+    "heapGrowthMB": 2.15,
     "listenerGrowth": 1,
-    "growthFrom30to90MB": 0.63
+    "growthFrom30to90MB": 0.65
   }
 }

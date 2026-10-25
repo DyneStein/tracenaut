@@ -39,7 +39,7 @@ export function parseProbeId(id: string) {
 }
 
 export default function tracenautInstrument(
-  { types: t }: { types: typeof BabelTypes },
+  { types: t, template }: { types: typeof BabelTypes; template: typeof import('@babel/core').template },
   opts: InstrumentOptions,
 ): PluginObj {
   const handled = new WeakSet<BabelTypes.Node>();
@@ -136,30 +136,18 @@ export default function tracenautInstrument(
     visitor: {
       Program(path) {
         if (!opts.probes) return;
-        // const __tn$ = globalThis.__TRACENAUT__ ?? <no-op stub>;
-        const stub = t.objectExpression([
-          t.objectProperty(t.identifier('e'), t.arrowFunctionExpression([], t.numericLiteral(0))),
-          t.objectProperty(t.identifier('x'), t.arrowFunctionExpression([], t.identifier('undefined'))),
-          t.objectProperty(t.identifier('k'), t.arrowFunctionExpression([], t.identifier('undefined'))),
-          t.objectProperty(
-            t.identifier('s'),
-            t.arrowFunctionExpression([t.identifier('_'), t.identifier('v')], t.identifier('v')),
-          ),
-          t.objectProperty(
-            t.identifier('r'),
-            t.arrowFunctionExpression([t.identifier('_'), t.identifier('v')], t.identifier('v')),
-          ),
-        ]);
-        const decl = t.variableDeclaration('const', [
-          t.variableDeclarator(
-            t.identifier(RT),
-            t.logicalExpression(
-              '??',
-              t.memberExpression(t.identifier('globalThis'), t.identifier(RUNTIME_GLOBAL)),
-              stub,
-            ),
-          ),
-        ]);
+        // const __tn$ = globalThis.__TRACENAUT_SHIM__ ??= { e(i) { … globalThis.__TRACENAUT__ … } … };
+        // One shared shim that finds the runtime at call time, so a module that loads before
+        // TraceNaut's runtime (Next.js loads the client after the app) still reports once it
+        // arrives. Without a runtime every probe is a no-op.
+        const R = `globalThis.${RUNTIME_GLOBAL}`;
+        const decl = template.statement.ast(`const ${RT} = (globalThis.__TRACENAUT_SHIM__ ??= {
+          e: (i) => { const r = ${R}; return r ? r.e(i) : 0; },
+          x: (n) => { const r = ${R}; if (r) r.x(n); },
+          k: (n) => { const r = ${R}; if (r) r.k(n); },
+          s: (n, v) => { const r = ${R}; return r ? r.s(n, v) : v; },
+          r: (n, v) => { const r = ${R}; return r ? r.r(n, v) : v; },
+        });`);
         path.unshiftContainer('body', decl);
       },
 

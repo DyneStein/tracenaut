@@ -16,6 +16,8 @@ import { serviceForFile } from '../workspace.js';
 export interface AgentResult {
   service: string;
   requests: AgentRequestRecord[];
+  /** Statements seen during the recording that could not be linked to any request. */
+  unattributed?: AgentSqlRecord[];
 }
 
 function parseProbe(id: string) {
@@ -91,9 +93,31 @@ export function buildTrace(
   const nodeCache = new Map<string, GraphNode>();
   const notes: string[] = [];
   const fe = buildTree(analyzer, frontend.calls, nodeCache, { splitRenders: true });
+  const expected = new Set(frontend.expected ?? []);
+  for (const root of fe.roots) if (!root.byEvent && expected.has(root.node.id)) root.scheduled = true;
 
-  const serverBySeq = new Map<number, { service: string; rec: AgentRequestRecord }>();
-  for (const a of agents) for (const rec of a.requests) serverBySeq.set(rec.seq, { service: a.service, rec });
+  // Keyed by the trace header's request key: `3` for the browser's third request, `3.1` for
+  // the first call the server made to another (traced) service while handling it.
+  const serverBySeq = new Map<string, { service: string; rec: AgentRequestRecord }>();
+  for (const a of agents) for (const rec of a.requests) serverBySeq.set(rec.key ?? String(rec.seq), { service: a.service, rec });
+
+  // A statement the database connection sent from its own queue is placed under a request
+  // (as likely, never as certain) only when it was sent while exactly that one traced request
+  // was being handled by the same server and no other HTTP request was in progress there.
+  const unattributed: AgentResult['unattributed'] & object = [];
+  for (const a of agents) {
+    for (const q of a.unattributed ?? []) {
+      const open = a.requests.filter((r) => q.at >= r.at && (r.durationMs === undefined || q.at <= r.at + r.durationMs));
+      // Requests that contain one another (a server calling itself while it waits): the
+      // innermost one is the one whose code was running.
+      const end = (r: AgentRequestRecord) => r.at + (r.durationMs ?? Infinity);
+      const inner = open.filter((r) => open.every((o) => o === r || (o.at <= r.at && end(o) >= end(r))));
+      const target = open.length === 1 ? open[0] : inner.length === 1 ? inner[0] : undefined;
+      if (target && !q.busy) target.sql.push({ ...q, caller: 0, deferred: true });
+      else unattributed.push(q);
+      (q as { service?: string }).service = a.service;
+    }
+  }
 
   const orphanRequests: TraceRequest[] = [];
   for (const r of frontend.requests) {
@@ -107,6 +131,7 @@ export function buildTrace(
   }
 
   if (!frontend.action) notes.push('No interaction happened while the trace was armed.');
+  if (frontend.navigatedAway) notes.push('Your action loaded a completely new page. The recording stops there: code that ran on the new page is not part of it.');
   if (frontend.dropped) notes.push(`${frontend.dropped} function calls were not recorded because the per-trace limit was reached.`);
   if (frontend.requests.some((r) => !r.correlated)) {
     notes.push('Cross-origin requests are shown but not correlated with a backend (TraceNaut only adds its trace header to same-origin requests).');
@@ -137,13 +162,15 @@ export function buildTrace(
     agents: connected,
     notes,
     eventMarks: frontend.eventMarks,
+    sockets: frontend.sockets,
+    unattributed: unattributed.map((sql) => ({ service: (sql as { service?: string }).service ?? '?', sql })),
   };
 }
 
 function traceRequest(
   analyzer: Analyzer,
   r: ClientRequestRecord,
-  serverBySeq: Map<number, { service: string; rec: AgentRequestRecord }>,
+  serverBySeq: Map<string, { service: string; rec: AgentRequestRecord }>,
   nodeCache: Map<string, GraphNode>,
   connected: { service: string; connected: boolean }[],
 ): TraceRequest {
@@ -155,7 +182,7 @@ function traceRequest(
     durationMs: r.end !== undefined ? round(r.end - r.at) : undefined,
     error: r.error,
   };
-  const server = serverBySeq.get(r.seq);
+  const server = serverBySeq.get(String(r.seq));
   if (!server) {
     tr.serverNote = !r.correlated
       ? 'cross-origin request; not correlated'
@@ -164,7 +191,18 @@ function traceRequest(
         : 'no backend agent connected';
     return tr;
   }
-  const { service, rec } = server;
+  tr.server = serverSide(analyzer, server, serverBySeq, nodeCache, 0);
+  return tr;
+}
+
+/** What a traced server did for one request: its calls, statements, route and onward requests. */
+function serverSide(
+  analyzer: Analyzer,
+  { service, rec }: { service: string; rec: AgentRequestRecord },
+  serverBySeq: Map<string, { service: string; rec: AgentRequestRecord }>,
+  nodeCache: Map<string, GraphNode>,
+  depth: number,
+): NonNullable<TraceRequest['server']> {
   const tree = buildTree(analyzer, rec.calls, nodeCache, { splitRenders: false });
   const topSql: AgentSqlRecord[] = [];
   for (const q of rec.sql) {
@@ -172,12 +210,49 @@ function traceRequest(
     if (owner) owner.sql.push({ ...q, evidence: 'runtime' });
     else topSql.push(q);
   }
+  const topRequests: TraceRequest[] = [];
+  for (const out of rec.outgoing ?? []) {
+    const nested: TraceRequest = { at: out.at, method: out.method, url: out.url, status: out.status, durationMs: out.durationMs, error: out.error, fromServer: true, toSelf: out.self || undefined };
+    const downstream = out.key ? serverBySeq.get(out.key) : undefined;
+    if (downstream && depth < 4) nested.server = serverSide(analyzer, downstream, serverBySeq, nodeCache, depth + 1);
+    else nested.serverNote = out.key ? 'the other service has no TraceNaut agent connected' : 'an external service; TraceNaut only follows local services';
+    const owner = tree.byToken.get(out.caller);
+    if (owner) owner.requests.push(nested);
+    else topRequests.push(nested);
+  }
+
+  // Which route handled it. Express reports its matched route. For any other framework the
+  // candidates are the routes whose method and path match; a candidate is confirmed when its
+  // handler function was seen running for this request, otherwise it is only likely.
   let routeNode: GraphNode | undefined;
+  let routeEvidence: 'runtime' | 'inferred' | undefined;
   if (rec.route) {
     const [method, ...rest] = rec.route.split(' ');
     const route = analyzer.routeByRuntime(service, method, rest.join(' '));
-    if (route) routeNode = analyzer.routeNode(route);
+    if (route) {
+      routeNode = analyzer.routeNode(route);
+      routeEvidence = 'runtime';
+    }
   }
-  tr.server = { service, route: rec.route, routeNode, calls: tree.roots, sql: topSql, dropped: rec.dropped };
-  return tr;
+  if (!routeNode) {
+    const candidates = analyzer.matchRoutes(rec.method, rec.url, { pages: true }).filter((m) => m.r.service === service);
+    const ran = new Set<string>();
+    const collect = (c: TraceCall) => {
+      ran.add(c.node.id);
+      c.children.forEach(collect);
+    };
+    tree.roots.forEach(collect);
+    const confirmed = candidates.find((m) => {
+      const h = analyzer.handlerNodeId(m.r);
+      return h !== undefined && ran.has(h);
+    });
+    const pick = confirmed ?? (candidates.length === 1 ? candidates[0] : undefined);
+    if (pick) {
+      routeNode = analyzer.routeNode(pick.r);
+      routeEvidence = confirmed ? 'runtime' : 'inferred';
+    }
+  }
+  // A React Server Action is not a route: it is recognised by the code that ran.
+  const action = routeNode ? undefined : tree.roots.find((c) => analyzer.isServerAction(c.node.id))?.node.label;
+  return { service, route: rec.route, routeNode, routeEvidence, action, calls: tree.roots, sql: topSql, requests: topRequests.length ? topRequests : undefined, dropped: rec.dropped };
 }

@@ -1,0 +1,1 @@
+{ "services": [ { "name": "api", "root": "server", "kind": "node" }, { "name": "svc2", "root": "svc2", "kind": "node" } ] }

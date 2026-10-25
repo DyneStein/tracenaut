@@ -5,3 +5,4 @@ export { loadWorkspace } from '../workspace.js';
 export { buildTrace } from '../runtime/merge.js';
 export { JourneyBuilder } from '../journey/flow.js';
 export { detectStack } from '../stack.js';
+export { TechDetector, packageOf } from '../journey/tech.js';

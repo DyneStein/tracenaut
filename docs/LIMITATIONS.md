@@ -1,54 +1,50 @@
 # Known limitations
 
-TraceNaut tries hard never to claim more than it knows. These are the current boundaries. `docs/COVERAGE.md` lists, technology by technology, what is detected, analysed, observed and explained.
+TraceNaut tries hard never to claim more than it knows. These are the current boundaries. `docs/COVERAGE.md` lists, technology by technology, what is detected, analysed, observed and explained, and which real applications were run.
 
 ## Supported today
-- **Frontend:** React (tested with React 19) built with Vite. Other JSX frameworks get source locations via the DOM fallback but no fiber-level handler confirmation. Next.js pages are analysed statically; the Vite plugin does not instrument a Next.js dev server (no webpack/Turbopack plugin yet), so Next.js apps cannot be inspected in the browser yet.
-- **Backend routes (static):** Express (`express()`, `Router()`, mounts, sub-apps, middleware order), Fastify (`app.get`, `app.route({…})`, `register(plugin, { prefix })`), Hono (`new Hono()`, `app.route('/x', sub)`, `use('/x/*')`), koa-router (`new Router({ prefix })`, nested `use('/x', sub.routes())`), Next.js App Router (`app/**/route.ts`, groups and `[params]`) and `pages/api`.
-- **Backend runtime:** Node.js ≥ 22.15 (uses `module.registerHooks`). Route identification at runtime uses Express's `req.route`; for other frameworks requests are still matched by method and path. SQL text is observed for `node:sqlite`, `better-sqlite3` and `pg`.
+- **In the browser:** React apps built with **Vite** (`@tracenaut/vite-plugin`) or **Next.js** (`@tracenaut/next`, Turbopack and webpack, Next 15 and 16). Other JSX frameworks get source locations via the DOM fallback but no fiber-level handler confirmation. Vue, Svelte, Angular and Remix/React Router framework mode have no bundler plugin yet.
+- **Server routes (static):** Express, Fastify, Hono, koa-router, Next.js (route files, pages, Server Actions, `pages/api`).
+- **Server at runtime:** any Node.js ≥ 22.15 HTTP server (`node --import @tracenaut/node-agent`, or `NODE_OPTIONS` for `next dev`). Which route handled a request is confirmed by seeing its handler run (Express also reports it directly); otherwise it is only matched by method and path and shown as likely.
+- **Databases at runtime:** statement text from SQLite (`node:sqlite`, `better-sqlite3`), and from the wire protocol for PostgreSQL (any in-process driver or ORM, validated with pg, postgres.js, Drizzle and Prisma 7's pg adapter against real PostgreSQL), MySQL, MongoDB and Redis (protocol-tested only, not against real servers yet).
 - **Languages:** TypeScript and JavaScript (analysed with the TypeScript compiler, `allowJs`).
 
 ## Static analysis
-- Requests are recognised for `fetch`, `axios` (`axios.get/post/…`, `axios(config)`, `axios.request`, and instances made with `axios.create({ baseURL })`), through any number of wrapper functions (up to 5 levels) and through small URL-building helpers. Other HTTP clients (ky, superagent, `$fetch`, generated API clients, tRPC, GraphQL) are not recognised yet.
-- When a URL helper puts a base address that is only known at runtime in front of the path (`getApiUrl(path)` reading configuration), TraceNaut assumes exactly that and matches routes by the end of their path. Such links are always **inferred**, and the note says what was assumed. A fixed request segment is never matched to a route parameter under this assumption.
-- Next.js `middleware.ts`, `basePath`, rewrites and redirects in `next.config` are not read. Responses of Next.js and Hono handlers are found when they `return Response.json(…)`, `new Response(…)`, `NextResponse.*` or `c.json(…)` directly or through one helper function.
-- Prisma calls (`x.<model>.<operation>()`) are recognised when the model is declared in a `.prisma` schema. Without the generated client they are **inferred** (names match the schema); the SQL that Prisma generates is never shown statically. Mongoose, Drizzle, Sequelize and TypeORM are detected as technologies but their queries are not analysed yet.
-- SQL is found when it is written as text: passed to a database API (`prepare`, `query`, `exec`, …), to any helper (`rawQuery(\`select …\`)`), or prepared elsewhere and run through `stmt.get()/all()/run()`.
-- Express `router.route('/x').get(...)` chains, dynamic route paths and routers built in loops are not extracted.
-- Values that flow through React context, dependency injection or dynamic property access are followed only heuristically (marked **inferred**) or not at all (**unresolved**).
-- A request is matched to a route assuming the path reaches the backend unchanged (e.g. a Vite proxy without rewrites). Proxy rewrites are not read.
-- Higher-order and dynamically constructed handlers (`onClick={make(id)}`) show the factory, not the produced function.
-- Elements drawn by library components (React Router's `<NavLink>`, UI kits) are reported as handled by that library; what the library does inside is not followed. "Watch it happen" shows which of the app's own code runs as a result.
-- Measured on two public repositories (see `docs/COVERAGE.md`): full static analysis of a 1,000-file repo takes about 5 s and 670 MB, a 2,000-file Next.js repo about 6 s and 380 MB. Larger monorepos are not measured.
+- Requests are recognised for `fetch` and `axios` through any number of wrapper functions (up to 5 levels) and URL-building helpers; TanStack Query's `mutate()/mutateAsync()` are followed to the `mutationFn` given to `useMutation` (directly or inside the app's own hook). Other clients (ky, superagent, `$fetch`, generated API clients, tRPC, GraphQL) are not recognised yet.
+- A value captured from an enclosing function (`useUpdateQuery(path)` → `post(path)` inside a callback) is not substituted with the caller's argument, so such addresses show as "known when the code runs". Recordings show them in full.
+- When a URL helper adds a base address known only at runtime, routes are matched by the end of their path and every such link is **likely**. Data requests are never matched to Next.js pages.
+- Functions handed to a library (`useDebouncedCallback(fn)`, `debounce(fn)`), handlers passed to library components (`<Form onSubmit={fn}>`), and form actions (`<form action={fn}>`, `useActionState(fn)`, `fn.bind(…)`) are followed; when a library decides when to call them, the link is **likely**.
+- Router navigation is recognised for Next.js (`useRouter()` methods, `redirect()`), React Router (`navigate` from `useNavigate`) and `location.assign/replace`, by type; other routers are not.
+- Next.js `middleware.ts`/`proxy.ts`, `basePath`, rewrites and redirects in `next.config` are not read. Prisma calls are matched against `schema.prisma` (likely without the generated client); Mongoose, Sequelize and TypeORM queries are not analysed statically (Drizzle and Prisma SQL are seen at runtime).
+- Express `router.route('/x').get(...)` chains, dynamic route paths and routers built in loops are not extracted. Proxy rewrites between front end and back end are not read.
+- Higher-order handlers (`onClick={make(id)}`) show the factory, not the produced function.
 
 ## Runtime tracing
-- Only instrumented code appears: library internals (React, Express, React Router) are not traced, by design.
-- A top-level call is presented as caused by your action only if it started while the browser was dispatching that action's events. Calls started by animation frames, timers or other events during the recording are shown as "Also ran during the recording", and long runs of them are folded. Effects that run after the redraw are labelled as such.
-- The trace window ends after ~700 ms of inactivity with no pending requests (max 12 s). Work scheduled later (long timers, websockets) is not captured.
-- Up to 5,000 calls per trace context are recorded; beyond that the count of dropped calls is reported.
-- Only same-origin browser requests are correlated with the backend (a header is added only there). Cross-origin requests are listed without server detail.
-- Requests that never get an answer (aborted, network failure) are shown as "No answer came back".
-- Query parameters whose names suggest secrets (token, key, password, secret, auth, session, code, signature, jwt, credential, otp) are recorded as `•••`, in the browser and on the server.
-- In React development mode, StrictMode double-invokes effects; traces faithfully show the duplicate requests.
-- Generator functions and class constructors are not probed.
-- Elements inside iframes cannot be inspected from the page around them. With the browser extension, choosing the menu item inside an iframe shows a message saying so (this path is not covered by the automated tests).
+- Only instrumented code appears: library internals (React, Next.js, routers, database libraries) are not traced, by design.
+- A top-level call is shown as caused by your action only if it started while the action's events were being dispatched, or if the element's own code leads to it (a debounce, a timer it sets: shown as **likely**). Animation frames, timers and effects that send nothing are folded as "also ran during the recording".
+- A database statement sent while the request's code is on the stack is linked as **happened**; one a driver sends later from its queue is **likely** (driver batching could mix requests); one sent from the connection's own queue while several requests are in progress is listed separately as "also ran, not linked". Unrelated background statements are dropped.
+- An action that loads a completely new page is still recorded up to that point; the next page finishes the recording and says where it stopped. Recordings are lost if the new page is on another origin or TraceNaut is not loaded there.
+- WebSocket messages are counted per connection (never read). Incoming messages are only counted on connections opened after TraceNaut loaded.
+- Server-side recording of Next.js needs the agent in the dev server's process (`NODE_OPTIONS`); Prisma's older native query engine and other native drivers do not go through Node sockets and are invisible.
+- The trace window ends after ~700 ms of inactivity with no pending requests (max 12 s). Up to 5,000 calls per trace context are recorded.
+- Only same-origin browser requests are correlated with the backend. Calls between local services are followed (the trace header is only sent to localhost); calls to other hosts are listed without their side.
+- Query parameters whose names suggest secrets, string literals in SQL, quoted parts of database error messages, bind parameters, passwords, documents, keys and message contents are never recorded.
+- Generator functions and class constructors are not probed. Elements inside iframes cannot be inspected from the page around them.
 
 ## Guided journeys
-- Step titles and explanations are assembled from verified code structure (calls, request bodies, SQL text, ORM calls, response calls, imports), not written by AI. They are deliberately plain and sometimes generic ("The server's code handles it").
-- A static journey shows everything the interaction's code can reach, in source order. Conditions are not modelled, except for alternative server answers (e.g. 200 / 401), which the Layers view draws as branches. Watch it happen shows the path actually taken.
-- All SQL for one request is grouped into a single database step after the server's code; the exact interleaving is visible in Technical mode.
-- Technologies are identified from the asset registry (129 technologies) using imports, file extensions, manifests and API usage. The "Built with" list on the home view reads manifests and files only; a dependency that is listed but unused still appears.
-- The concept library (66 curated explanations, plus the registry's descriptions of 129 technologies) is English only. Terms outside it fall back to the registry's description or plain text.
-- Observed and static journeys are compared by functions, routes and SQL text, so the "didn't run this time" list is precise to that level.
+- Titles and explanations are assembled from verified structure and recordings, never written by AI. A static journey shows everything the code can reach (all branches); several possible navigations are not narrowed to one. Watch it happen shows the path actually taken.
+- Technologies come from the registry (129 technologies) or, for any other package, from that package's own `package.json`. Package-described libraries are listed with the step that calls them, not in the place headers.
+- The concept library (about 70 curated explanations) is English only.
 - AI explanations are not implemented (off by design until a privacy decision is made).
 
 ## Visual layer
-- The element shown at the top of a journey is a simplified drawing from the element's live colours, border and text, not a screenshot. See-through elements are drawn on the page colour behind them. Images, icons and complex layouts inside the element are not reproduced. Input values are never read; placeholders or labels are shown instead.
-- The Layers view draws three places (browser, server, database). Each request gets its own lane (the first two are shown, the rest behind "Show more"); a place whose steps are all unknown is drawn as an outline.
-- Official logos come from Simple Icons 16.35.0 and keep their original artwork. Logos under non-commercial licences are excluded (Vue.js, Sass); technologies without a logo use TraceNaut's conceptual icons. Logos identify technologies; they do not imply endorsement.
-- Automated tests run in Chromium. The panel has not been run in Safari by the test suite (Safari automation needs "Allow remote automation" enabled, or a Playwright WebKit download).
+- The element drawing at the top is a simplified rendering from live styles (see-through elements on their page colour), not a screenshot. Input values are never read.
+- Official logos are unaltered Simple Icons artwork; thin wordmarks (Express, Koa) look faint at 14 px. Logos under non-commercial licences are excluded.
+
+## Browsers
+- Chromium: full automated suite (unit + 40 e2e tests). Safari 26.5: real-Safari smoke test (`node tests/safari/smoke.mjs`, 9 checks: Alt+right-click menu, journey, icons, step details, concept cards, Layers, Watch it happen, password safety, scrolling), run on the demo app; Next.js apps were exercised in Chromium only. Firefox is untested.
 
 ## Security model
-- The daemon trusts any page on `localhost` / `127.0.0.1` that presents the session token; the token is injected into your dev page by the Vite plugin. Do not expose the dev server publicly while the daemon runs. When the daemon restarts, open pages hold an old token; the panel says to reload.
-- TraceNaut never executes repository code itself. Your app is instrumented only when *you* add the Vite plugin and/or start Node with the agent.
-- If TraceNaut cannot parse a file, the Vite plugin serves it unchanged (and logs one line); the app keeps working, that file just cannot be inspected.
+- The daemon trusts any local page that presents the session token, which bundler plugins inject into your dev page. The token is kept across daemon restarts for the same repository (owner-only file); `tracenaut start --new-token` replaces it. Do not expose the dev server publicly while the daemon runs.
+- In development, `@tracenaut/next` adds `http://127.0.0.1:*` to the app's Content-Security-Policy headers set in `next.config` (`headers()`), so the client can load. A CSP set by middleware or a proxy is not changed, and then TraceNaut cannot load.
+- TraceNaut never executes repository code itself. Your app is instrumented only when you add a plugin and/or start Node with the agent. Files it cannot parse are served unchanged.

@@ -322,7 +322,8 @@ function groupByZone(steps: FlowStep[]) {
 // ------------------------------------------------------------------ zone header: the place, its technologies
 
 function ZoneHeader({ zone, steps }: { zone: Zone; steps: FlowStep[] }) {
-  const techs = uniqueTech(steps).filter((t) => t.kind !== 'runtime');
+  // The place's main technologies only; other libraries are listed with the step that uses them.
+  const techs = uniqueTech(steps).filter((t) => t.kind !== 'runtime' && !t.fromPackage);
   return (
     <div class="zone-head">
       <Icon3D name={ZONE_ICON[zone]} size={26} />
@@ -343,7 +344,7 @@ export function uniqueTech(steps: FlowStep[]) {
 }
 
 export function techExtra(tech: TechRef) {
-  return { role: tech.role, evidence: tech.evidence, name: tech.name, kind: tech.kind, what: tech.what, effect: tech.effect, asset: tech.asset, logo: tech.logo };
+  return { role: tech.role, evidence: tech.evidence, name: tech.name, kind: tech.kind, what: tech.what, effect: tech.effect, asset: tech.asset, logo: tech.logo, fromPackage: tech.fromPackage };
 }
 
 export function TechChip({ tech }: { tech: TechRef }) {

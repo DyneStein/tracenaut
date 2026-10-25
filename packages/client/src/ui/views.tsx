@@ -453,6 +453,22 @@ function BuiltWith() {
           </div>
         </>
       ) : null}
+      {stack.packages?.length ? (
+        <details class="bw-packages">
+          <summary>
+            {stack.packages.length} other package{stack.packages.length > 1 ? 's' : ''} this project uses
+          </summary>
+          <ul>
+            {stack.packages.map((p) => (
+              <li key={p.name}>
+                <code>{p.name}</code>
+                <span>{p.local ? 'part of this project' : !p.installed ? 'not installed here, so its description is not available' : (p.description ?? 'no description in its package.json')}</span>
+              </li>
+            ))}
+          </ul>
+          <p class="bw-note">Described in their own words, from each package's package.json. TraceNaut does not follow how they work.</p>
+        </details>
+      ) : null}
       <p class="bw-foot">
         Found by reading {stack.scanned.files} files{stack.scanned.truncated ? ' (stopped early: very large repository)' : ''}. Hover a name to see how TraceNaut knows.
       </p>

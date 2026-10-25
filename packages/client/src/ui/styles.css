@@ -573,6 +573,7 @@ a.loc:hover, button.loc:hover { color: var(--tn-accent); text-decoration: underl
 .concept-close:hover { background: var(--tn-hover); color: var(--tn-text); }
 .concept-name { font-size: 14.5px; font-weight: 700; }
 .concept-short { margin: 0 0 8px; }
+.concept-source { margin: -4px 0 8px; font-size: 10.5px; color: var(--tn-muted); }
 .concept-example { display: block; font-family: var(--tn-mono); font-size: 11.5px; padding: 6px 8px; border-radius: 6px; background: var(--tn-surface-2); margin-bottom: 8px; white-space: pre-wrap; }
 .concept-app { display: flex; flex-direction: column; gap: 1px; padding: 6px 0 0; margin-top: 6px; border-top: 1px solid var(--tn-border); font-size: 12px; }
 .concept-app span { font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; color: var(--tn-accent); }
@@ -598,3 +599,8 @@ a.loc:hover, button.loc:hover { color: var(--tn-accent); text-decoration: underl
 .step-fold button:hover { border-color: var(--tn-accent); color: var(--tn-text); }
 .fold-count { font-weight: 700; color: var(--tn-text); }
 .fold-hint { font-size: 11px; }
+.bw-packages { margin-top: 10px; font-size: 11.5px; }
+.bw-packages summary { cursor: pointer; color: var(--tn-accent); }
+.bw-packages ul { list-style: none; margin: 6px 0 0; padding: 0; max-height: 220px; overflow: auto; overscroll-behavior: contain; }
+.bw-packages li { display: flex; flex-direction: column; padding: 4px 0; border-top: 1px solid var(--tn-border); }
+.bw-packages li span { color: var(--tn-muted); }
