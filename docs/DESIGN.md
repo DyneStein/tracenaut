@@ -4,7 +4,7 @@ Goal: maximum understanding through simple, polished visuals. A visual element e
 
 ## Brand
 
-The mark is a "cutaway" isometric cube: an unbroken light exterior, a dark recess with faint strata, and a lit cyan core, read as "looking inside a running system". It was chosen from several generated candidates after a design review with Codex CLI (which saw only rendered images and a brief), whose suggestions were applied: keep the exterior uninterrupted, darken the interior, enlarge the core, and draw a dedicated 16 px version. Files: `brand-mark`, `brand-favicon` (16 px drawing), `brand-mono-light/dark`, `brand-lockup-light/dark` in `packages/assets/dist/icons`, PNG exports in `packages/assets/dist/brand`, and the extension icons.
+The mark is three stacked glass layers with a pointer on top: you point at something on the page and see the layers of the running system beneath it (browser, server, database). It is raster artwork (glossy glass does not reduce to flat vector shapes), so the PNGs in `packages/assets/src/brand` are the source: `tracenaut-mark.png` (master, transparent background), downscaled `mark-16…512.png` (the 16–48 px ones lightly sharpened), and `mono-light/dark-256.png` single-colour versions. `npm run assets` wraps them as `brand-mark`, `brand-favicon`, `brand-mono-light/dark` and `brand-lockup-light/dark` SVGs in `packages/assets/dist/icons`, copies PNG exports to `packages/assets/dist/brand`, and refreshes the extension icons. At 16 px the mark reads as a blue stack with a pointer; the pointer is the first detail to go.
 
 ## Icon system (2.5D)
 
@@ -13,7 +13,7 @@ All TraceNaut icons are generated from shared isometric primitives (`scripts/ico
 ```bash
 npm run assets                                  # icons + logo tiles + manifest + gallery → packages/assets/dist
 open packages/assets/dist/gallery.html          # every asset, light and dark, with licences and support levels
-node scripts/icons/export-png.mjs brand-mark 512 x.png   # transparent PNG export
+node scripts/icons/export-png.mjs request 512 x.png      # transparent PNG export of an icon
 node scripts/coverage.mjs                       # technology × support-level matrix (docs/COVERAGE.md)
 ```
 
@@ -41,7 +41,7 @@ node scripts/coverage.mjs                       # technology × support-level ma
 
 Distinctions that must survive at 22 px: request and response use large opposite arrows (cyan leaving, green returning); browser, update and API have different silhouettes; browser code and server code carry shape cues, not only colour; the condition icon is an upright flowchart diamond.
 
-**Delivery.** Icons are SVG files served by the daemon at `/assets/icons/<name>.svg?v=<version>` with an immutable cache, loaded lazily by `<img>` (`Icon3D`). The client bundle contains no icon data (it went from 191.6 KB to 137.8 KB raw while gaining features). Average icon size 2.4 KB, 420 KB for the whole set. An icon always sits next to text; it never carries meaning alone.
+**Delivery.** Icons are SVG files served by the daemon at `/assets/icons/<name>.svg?v=<version>` with an immutable cache, loaded lazily by `<img>` (`Icon3D`). The client bundle contains no icon data (it went from 191.6 KB to 137.8 KB raw while gaining features). Average icon size 2.4 KB, 420 KB for the whole set; the brand mark is 33 KB (it embeds a 128 px PNG) and is fetched once. An icon always sits next to text; it never carries meaning alone.
 
 ## Information hierarchy (Guided mode)
 

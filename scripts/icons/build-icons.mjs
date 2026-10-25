@@ -9,10 +9,10 @@
 //   depth        soft vertical gradients per face, a light rim on top edges, one radial contact shadow
 //   palette      one hue per meaning; faces derive from the hue by mixing with white/black
 //   canvas       32×32, transparent, no filters, no text, centred on its footprint
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { COS, SIN, HUES, P, Icon, hex, line, shade, tint, ink, W } from './iso.mjs';
-import { markSvg, BRAND } from './brand.mjs';
+import { markSvg, BRAND_SRC } from './brand.mjs';
 import { TECHNOLOGIES, CONCEPT_ICONS, CATEGORIES } from '../../packages/assets/src/registry.mjs';
 
 const OUT = new URL('../../packages/assets/dist/icons/', import.meta.url).pathname;
@@ -425,7 +425,7 @@ for (const [name, svg] of Object.entries(files)) writeFileSync(`${OUT}${name}.sv
 // ---- brand: mark variants and wordmark lockups
 const lockup = (theme) => {
   const mark = markSvg('color').replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
-  const [trace, naut] = theme === 'dark' ? ['#f1f2f8', '#a5a6ff'] : ['#14162b', '#4f46e5'];
+  const [trace, naut] = theme === 'dark' ? ['#f1f2f8', '#5ec8ff'] : ['#14162b', '#1d7fe0'];
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 236 64" width="236" height="64"><g>${mark}</g><text x="72" y="42" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="28" font-weight="650" letter-spacing="-0.4"><tspan fill="${trace}">Trace</tspan><tspan fill="${naut}">Naut</tspan></text></svg>`;
 };
 const brandFiles = {
@@ -440,7 +440,14 @@ for (const [name, svg] of Object.entries(brandFiles)) {
   files[name] = svg;
   writeFileSync(`${OUT}${name}.svg`, `${svg}\n`);
 }
-void BRAND;
+// PNG exports, and the browser extension's toolbar icons (tracked in git, so copied in place).
+const BRAND_OUT = new URL('../../packages/assets/dist/brand/', import.meta.url).pathname;
+rmSync(BRAND_OUT, { recursive: true, force: true });
+mkdirSync(BRAND_OUT, { recursive: true });
+copyFileSync(`${BRAND_SRC}tracenaut-mark.png`, `${BRAND_OUT}tracenaut.png`);
+copyFileSync(`${BRAND_SRC}mark-512.png`, `${BRAND_OUT}tracenaut-512.png`);
+copyFileSync(`${BRAND_SRC}mark-32.png`, `${BRAND_OUT}favicon-32.png`);
+for (const size of [16, 32, 48, 128]) copyFileSync(`${BRAND_SRC}mark-${size}.png`, new URL(`../../packages/extension/src/icons/icon-${size}.png`, import.meta.url).pathname);
 
 const missingConcepts = Object.keys(CONCEPT_ICONS).filter((c) => !icons[c]);
 if (missingConcepts.length) throw new Error(`registry lists concept icons that are not drawn: ${missingConcepts.join(', ')}`);
